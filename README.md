@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Spillebulle/homelab-manger/main/frontend/static/logo.png" alt="HomeLab Manager" width="120">
+  <img src="https://raw.githubusercontent.com/Spillebulle/homelab-manger/main/frontend/static/logo.png" alt="HomeLab Manger" width="120">
 </p>
 
-<h1 align="center">HomeLab Manager</h1>
+<h1 align="center">HomeLab Manger</h1>
 
 <p align="center">
   Single-process FastAPI app for managing homelab gear — switches (D-Link, generic SNMP), servers (Cisco CIMC, Dell iDRAC, HPE iLO, Huawei iBMC via Redfish), and anything else with an SNMP / SSH / Redfish / IPMI surface. JSON API + a static SPA in one binary.
@@ -38,7 +38,7 @@ The recommended way is the pre-built container — it includes every Python depe
 ### Option 1 — GitHub Container Registry (GHCR)
 
 ```bash
-docker run -d --name homelab-manager \
+docker run -d --name homelab-manger \
   -p 8080:8080 \
   -e ADMIN_PASSWORD=pick-something \
   -v homelab-data:/data \
@@ -48,7 +48,7 @@ docker run -d --name homelab-manager \
 ### Option 2 — Docker Hub
 
 ```bash
-docker run -d --name homelab-manager \
+docker run -d --name homelab-manger \
   -p 8080:8080 \
   -e ADMIN_PASSWORD=pick-something \
   -v homelab-data:/data \
@@ -63,7 +63,7 @@ docker run -d --name homelab-manager \
 git clone https://github.com/Spillebulle/homelab-manger.git
 cd homelab-manger
 docker build -t homelab-manger .
-docker run -d --name homelab-manager \
+docker run -d --name homelab-manger \
   -p 8080:8080 -e ADMIN_PASSWORD=pick-something -v homelab-data:/data \
   homelab-manger
 ```

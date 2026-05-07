@@ -64,7 +64,7 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
 
-app = FastAPI(title="HomeLab Manager", lifespan=lifespan)
+app = FastAPI(title="HomeLab Manger", lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
     secret_key=get_session_secret(),
