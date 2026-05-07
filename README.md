@@ -69,4 +69,4 @@ See `CLAUDE.md` for the architectural deep-dive, vendor quirks (especially D-Lin
 
 ## License
 
-No license declared — treat as all-rights-reserved by default. Add a `LICENSE` file before sharing publicly.
+Apache License 2.0. See [LICENSE](LICENSE).
