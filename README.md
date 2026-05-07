@@ -20,12 +20,25 @@ Then open http://localhost:8080. Default username is `admin`. If you didn't set 
 
 ## Container
 
+Pre-built images are published on every push to `main`:
+
+- `ghcr.io/spillebulle/homelab-manger:latest`
+- `docker.io/spillebulle/homelab-manger:latest` *(same image)*
+
+Both expose `linux/amd64` and `linux/arm64`. Run:
+
 ```bash
-docker build -t homelab-manager .
 docker run -d -p 8080:8080 \
   -e ADMIN_PASSWORD=pick-something \
   -v homelab-data:/data \
-  homelab-manager
+  ghcr.io/spillebulle/homelab-manger:latest
+```
+
+Or build locally:
+
+```bash
+docker build -t homelab-manger .
+docker run -d -p 8080:8080 -e ADMIN_PASSWORD=pick-something -v homelab-data:/data homelab-manger
 ```
 
 The `/data` volume holds the SQLite DB and the session-cookie secret, so restarts don't log you out and don't reset the admin password.
