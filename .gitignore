@@ -1,0 +1,38 @@
+# Secrets / runtime data — must never be committed
+homelab.db
+homelab.db-journal
+homelab.db-wal
+homelab.db-shm
+.session_secret
+*.env
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Claude Code local settings
+.claude/settings.local.json
+.claude/
+CLAUDE.md
+
+# Stray artifacts
+package-lock.json
+node_modules/

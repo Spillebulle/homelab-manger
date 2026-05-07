@@ -1,0 +1,1878 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HomeLab Manager</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            surface: '#0f1117',
+            panel:   '#161b27',
+            card:    '#1e2433',
+            border:  '#2a3144',
+          }
+        }
+      }
+    }
+  </script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.5/dist/cdn.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <style>
+    [x-cloak] { display: none !important; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #2a3144; border-radius: 3px; }
+    .tab-active { border-bottom: 2px solid #3b82f6; color: #60a5fa; }
+  </style>
+</head>
+<body class="bg-surface text-gray-200 h-screen overflow-hidden" x-data="homelab()" x-init="init()" x-cloak>
+
+  <!-- ── Layout ─────────────────────────────────────────────────────────── -->
+  <div class="flex h-screen">
+
+    <!-- ── Sidebar ──────────────────────────────────────────────────────── -->
+    <aside class="w-60 bg-panel border-r border-border flex flex-col shrink-0">
+
+      <!-- Logo -->
+      <div class="px-4 py-4 border-b border-border">
+        <div class="flex items-center gap-2">
+          <i class="fa-solid fa-server text-blue-400 text-lg"></i>
+          <span class="font-bold text-white">HomeLab Manager</span>
+        </div>
+        <div class="text-xs text-gray-500 mt-1" x-text="devices.length + ' devices'"></div>
+      </div>
+
+      <!-- Nav -->
+      <div class="flex-1 overflow-y-auto p-2">
+
+        <!-- Dashboard -->
+        <button @click="selectedId = null; tab = 'overview'"
+                :class="!selectedId ? 'bg-blue-600/20 text-blue-300' : 'text-gray-400 hover:bg-card hover:text-gray-200'"
+                class="w-full flex items-center gap-2 px-3 py-2 rounded text-sm mb-1 transition-colors">
+          <i class="fa-solid fa-gauge-high w-4 text-center"></i> Dashboard
+        </button>
+
+        <!-- Device groups -->
+        <template x-for="[type, devs] in deviceGroups" :key="type">
+          <div class="mb-2">
+            <div class="px-3 py-1 text-xs text-gray-500 uppercase tracking-wider"
+                 x-text="typeLabel(type)"></div>
+            <template x-for="d in devs" :key="d.id">
+              <button @click="selectDevice(d.id)"
+                      :class="selectedId === d.id ? 'bg-blue-600/20 text-blue-300' : 'text-gray-400 hover:bg-card hover:text-gray-200'"
+                      class="w-full flex items-center gap-2 px-3 py-2 rounded text-sm transition-colors">
+                <span :class="statusDot(d)" class="w-2 h-2 rounded-full shrink-0"></span>
+                <span class="truncate flex-1 text-left" x-text="d.name"></span>
+              </button>
+            </template>
+          </div>
+        </template>
+      </div>
+
+      <!-- Add device -->
+      <div class="p-2 border-t border-border">
+        <button @click="openAddModal()"
+                class="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm px-3 py-2 rounded transition-colors">
+          <i class="fa-solid fa-plus"></i> Add Device
+        </button>
+      </div>
+
+      <!-- Account -->
+      <div class="p-2 border-t border-border flex items-center gap-2">
+        <div class="flex-1 min-w-0">
+          <div class="text-xs text-gray-500">Signed in as</div>
+          <div class="text-sm text-gray-200 truncate" x-text="username || '—'"></div>
+        </div>
+        <button @click="openPasswordModal()" title="Change password"
+                class="text-gray-400 hover:text-white px-2 py-1 rounded hover:bg-card">
+          <i class="fa-solid fa-key"></i>
+        </button>
+        <button @click="logout()" title="Sign out"
+                class="text-gray-400 hover:text-white px-2 py-1 rounded hover:bg-card">
+          <i class="fa-solid fa-right-from-bracket"></i>
+        </button>
+      </div>
+    </aside>
+
+    <!-- ── Main ─────────────────────────────────────────────────────────── -->
+    <main class="flex-1 overflow-y-auto">
+
+      <!-- Loading overlay -->
+      <div x-show="loading" class="fixed inset-0 bg-black/40 flex items-center justify-center z-40">
+        <i class="fa-solid fa-circle-notch fa-spin text-blue-400 text-3xl"></i>
+      </div>
+
+      <!-- Dashboard -->
+      <template x-if="!selectedId">
+        <div class="p-6">
+          <h1 class="text-2xl font-bold text-white mb-1">Dashboard</h1>
+            <p class="text-gray-400 text-sm mb-6">All devices — <span class="text-green-400"><i class="fa-solid fa-bolt"></i> Live updates via WebSocket</span></p>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            <template x-for="d in devices" :key="d.id">
+              <div @click="selectDevice(d.id)" class="bg-card border border-border rounded-lg p-4 cursor-pointer hover:border-blue-500/50 transition-colors">
+                <div class="flex items-start justify-between mb-3">
+                  <div>
+                    <div class="font-semibold text-white text-sm" x-text="d.name"></div>
+                    <div class="text-xs text-gray-500 mt-0.5" x-text="d.hostname"></div>
+                  </div>
+                  <span :class="statusDot(d) + ' mt-1'" class="w-2.5 h-2.5 rounded-full shrink-0"></span>
+                </div>
+                <div class="flex items-center justify-between">
+                  <span class="text-xs bg-gray-700 text-gray-300 px-2 py-0.5 rounded"
+                        x-text="d.adapter_type.toUpperCase()"></span>
+                  <span class="text-xs text-gray-500" x-text="d.last_seen ? relTime(d.last_seen) : 'never'"></span>
+                </div>
+                <div x-show="d.status_error" class="mt-2 text-xs text-red-400 truncate" x-text="d.status_error"></div>
+                <div x-show="d.status && d.status.sysDescr" class="mt-2 text-xs text-gray-500 truncate" x-text="d.status && d.status.sysDescr"></div>
+                <div x-show="d.status && d.status.model" class="mt-1 text-xs text-gray-400 truncate"
+                     x-text="d.status && (d.status.model + (d.status.serial ? ' · ' + d.status.serial : ''))"></div>
+              </div>
+            </template>
+            <div x-show="devices.length === 0" class="col-span-full text-center text-gray-500 py-16">
+              <i class="fa-solid fa-server text-4xl mb-3"></i>
+              <p>No devices yet. Click <strong class="text-gray-300">Add Device</strong> to get started.</p>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- Device detail -->
+      <template x-if="selectedId">
+        <div>
+          <!-- Device header -->
+          <div class="bg-panel border-b border-border px-6 py-4 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+              <span :class="statusDot(selectedDevice)" class="w-3 h-3 rounded-full"></span>
+              <div>
+                <div class="font-bold text-white text-lg" x-text="selectedDevice?.name"></div>
+                <div class="text-sm text-gray-400" x-text="selectedDevice?.hostname + ' · ' + (selectedDevice?.adapter_type || '').toUpperCase()"></div>
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="text-xs text-gray-500" x-text="detail?.status_updated ? 'Updated ' + relTime(detail.status_updated) : ''"></span>
+              <button @click="refresh()" :disabled="loading"
+                      class="text-sm bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded flex items-center gap-1.5 transition-colors disabled:opacity-50">
+                <i class="fa-solid fa-arrows-rotate" :class="loading && 'fa-spin'"></i> Refresh
+              </button>
+              <button @click="openEditModal(selectedDevice)"
+                      class="text-sm bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded transition-colors">
+                <i class="fa-solid fa-pen"></i>
+              </button>
+            </div>
+          </div>
+
+          <!-- Tabs -->
+          <div class="bg-panel border-b border-border px-6 flex gap-0 text-sm">
+            <template x-for="t in availableTabs" :key="t.id">
+              <button @click="tab = t.id"
+                      :class="tab === t.id ? 'tab-active' : 'text-gray-400 hover:text-gray-200'"
+                      class="px-4 py-3 transition-colors mr-1">
+                <i :class="t.icon + ' mr-1.5'"></i><span x-text="t.label"></span>
+              </button>
+            </template>
+          </div>
+
+          <!-- Tab content -->
+          <div class="p-6">
+
+            <!-- ── Overview ── -->
+            <template x-if="tab === 'overview'">
+              <div>
+                <template x-if="detail.status">
+                  <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                    <!-- Switch status cards -->
+                    <template x-if="isSwitch">
+                      <template x-for="kv in statusKV(detail.status)" :key="kv.k">
+                        <div class="bg-card border border-border rounded-lg p-4">
+                          <div class="text-xs text-gray-500 mb-1" x-text="kv.k"></div>
+                          <div class="text-sm font-medium text-white break-all" x-text="kv.v"></div>
+                        </div>
+                      </template>
+                    </template>
+                    <!-- Server status cards -->
+                    <template x-if="isServer">
+                      <template x-for="kv in statusKV(detail.status)" :key="kv.k">
+                        <div class="bg-card border border-border rounded-lg p-4">
+                          <div class="text-xs text-gray-500 mb-1" x-text="kv.k"></div>
+                          <div class="text-sm font-medium" :class="kv.k === 'health' ? healthColor(kv.v) : 'text-white'" x-text="kv.v"></div>
+                        </div>
+                      </template>
+                    </template>
+                  </div>
+                </template>
+                <!-- Power actions (server) -->
+                <template x-if="isServer">
+                  <div class="flex flex-wrap gap-2">
+                    <button @click="confirm('Power On?',   () => action('power_on'))"    class="btn-action bg-green-700 hover:bg-green-600"><i class="fa-solid fa-power-off mr-1"></i>Power On</button>
+                    <button @click="confirm('Power Off?',  () => action('power_off'))"   class="btn-action bg-red-700 hover:bg-red-600"><i class="fa-solid fa-power-off mr-1"></i>Power Off</button>
+                    <button @click="confirm('Power Cycle?',() => action('power_cycle'))" class="btn-action bg-yellow-600 hover:bg-yellow-500"><i class="fa-solid fa-rotate-right mr-1"></i>Power Cycle</button>
+                    <button @click="confirm('Hard Reset?', () => action('hard_reset'))"  class="btn-action bg-orange-700 hover:bg-orange-600"><i class="fa-solid fa-triangle-exclamation mr-1"></i>Hard Reset</button>
+                    <template x-if="selectedDevice?.adapter_type !== 'cimc'">
+                      <button @click="confirm('Graceful Shutdown?', () => action('graceful_shutdown'))" class="btn-action bg-gray-600 hover:bg-gray-500"><i class="fa-solid fa-stop mr-1"></i>Graceful Shutdown</button>
+                    </template>
+                  </div>
+                </template>
+              </div>
+            </template>
+
+            <!-- ── Ports ── -->
+            <template x-if="tab === 'ports'">
+              <div>
+                <div class="flex items-center justify-between mb-4">
+                  <div>
+                    <span class="text-sm text-gray-400" x-text="portSummary"></span>
+                  </div>
+                  <input x-model="portFilter" placeholder="Filter ports…"
+                         class="bg-card border border-border rounded px-3 py-1.5 text-sm text-gray-200 placeholder-gray-500 w-48 focus:outline-none focus:border-blue-500">
+                </div>
+
+                <!-- Front-panel visual -->
+                <div x-show="(detail.ports || []).length" class="bg-card border border-border rounded-lg p-3 mb-4 overflow-x-auto">
+                  <div class="inline-flex flex-col gap-1">
+                    <template x-for="(row, rowIdx) in panelRows" :key="rowIdx">
+                      <div class="flex gap-1">
+                        <template x-for="p in row" :key="p.index">
+                          <button @click="selectPort(p.index)"
+                                  :title="portTooltip(p)"
+                                  :class="[portColor(p), selectedPort === String(p.index) ? 'ring-2 ring-blue-400' : '', p.combo ? 'border-b-2 border-yellow-400' : '']"
+                                  class="relative w-8 h-8 rounded text-[10px] font-mono flex items-center justify-center transition-colors shrink-0">
+                            <span x-text="p.index"></span>
+                            <span x-show="portPoeDot(p)"
+                                  :class="portPoeDot(p)"
+                                  class="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full"></span>
+                          </button>
+                        </template>
+                      </div>
+                    </template>
+                  </div>
+                  <div class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] text-gray-500">
+                    <span class="inline-flex items-center gap-1"><span class="w-3 h-3 rounded bg-green-500/80"></span>Up</span>
+                    <span class="inline-flex items-center gap-1"><span class="w-3 h-3 rounded bg-gray-600/60"></span>Down (admin up)</span>
+                    <span class="inline-flex items-center gap-1"><span class="w-3 h-3 rounded bg-gray-700"></span>Disabled</span>
+                    <span class="inline-flex items-center gap-1"><span class="w-3 h-3 rounded bg-gray-600/60 border-b-2 border-yellow-400"></span>Combo</span>
+                    <span class="inline-flex items-center gap-1"><span class="relative w-3 h-3 rounded bg-gray-600/60"><span class="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-yellow-400"></span></span>PoE delivering</span>
+                    <span class="inline-flex items-center gap-1"><span class="relative w-3 h-3 rounded bg-gray-600/60"><span class="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-red-500"></span></span>PoE fault</span>
+                  </div>
+                </div>
+
+
+                <div class="overflow-x-auto">
+                  <table class="w-full text-sm">
+                    <thead>
+                      <tr class="text-xs text-gray-500 uppercase tracking-wide border-b border-border">
+                        <th class="text-left pb-2 pr-4">Port</th>
+                        <th class="text-left pb-2 pr-4">Name / Alias</th>
+                        <th class="text-left pb-2 pr-4">Untagged</th>
+                        <th class="text-left pb-2 pr-4">Tagged</th>
+                        <th class="text-left pb-2 pr-4">Admin</th>
+                        <th class="text-left pb-2 pr-4">Link</th>
+                        <th class="text-right pb-2 pr-4">Speed</th>
+                        <th class="text-right pb-2 pr-4">RX</th>
+                        <th class="text-right pb-2 pr-4">TX</th>
+                        <th class="text-left pb-2 pr-4">PoE</th>
+                        <th class="text-right pb-2 pr-4">PoE W</th>
+                        <th class="text-right pb-2">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <template x-for="p in filteredPorts" :key="p.index">
+                        <tr :data-port-row="p.index"
+                            @click="selectPort(p.index)"
+                            :class="selectedPort === String(p.index) ? 'bg-blue-500/15 ring-1 ring-blue-500/40' : 'hover:bg-card/50'"
+                            class="border-b border-border/50 cursor-pointer">
+                          <td class="py-2 pr-4 font-mono text-xs text-gray-400" x-text="p.index"></td>
+                          <td class="py-2 pr-4">
+                            <div class="flex items-center gap-2">
+                              <div class="text-white font-medium" x-text="p.name"></div>
+                              <span x-show="p.combo"
+                                    class="text-[10px] uppercase tracking-wider bg-blue-500/15 text-blue-300 border border-blue-500/30 rounded px-1.5 py-0.5"
+                                    title="Combo port — RJ45 jack and SFP cage share this port number">Combo</span>
+                            </div>
+                            <div x-show="p.alias" class="text-xs text-gray-500" x-text="p.alias"></div>
+                          </td>
+                          <td class="py-2 pr-4">
+                            <template x-if="untaggedVlanForPort(p.index)">
+                              <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono bg-green-500/15 text-green-200 border border-green-500/30"
+                                    :title="untaggedVlanForPort(p.index).name">
+                                <span x-text="untaggedVlanForPort(p.index).vid"></span>
+                                <span class="text-green-400/70" x-text="untaggedVlanForPort(p.index).name"></span>
+                              </span>
+                            </template>
+                            <template x-if="!untaggedVlanForPort(p.index)">
+                              <span class="text-gray-600 text-xs">—</span>
+                            </template>
+                          </td>
+                          <td class="py-2 pr-4">
+                            <div class="flex flex-wrap gap-1 max-w-[160px]">
+                              <template x-for="v in taggedVlansForPort(p.index)" :key="v.vid">
+                                <span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-blue-500/15 text-blue-200 border border-blue-500/30"
+                                      :title="v.name"
+                                      x-text="v.vid"></span>
+                              </template>
+                              <template x-if="taggedVlansForPort(p.index).length === 0">
+                                <span class="text-gray-600 text-xs">—</span>
+                              </template>
+                            </div>
+                          </td>
+                          <td class="py-2 pr-4">
+                            <span :class="p.adminStatus === 1 ? 'text-green-400' : 'text-red-400'"
+                                  x-text="p.adminStatus === 1 ? 'Up' : 'Down'"></span>
+                          </td>
+                          <td class="py-2 pr-4">
+                            <span :class="p.operStatus === 1 ? 'text-green-400' : 'text-gray-500'"
+                                  x-text="p.operStatus === 1 ? 'Up' : 'Down'"></span>
+                          </td>
+                          <td class="py-2 pr-4 text-right text-gray-400" x-text="p.speedMbps ? p.speedMbps + 'M' : '—'"></td>
+                          <td class="py-2 pr-4 text-right text-gray-400 font-mono text-xs" x-text="fmtBytes(p.inOctets)"></td>
+                          <td class="py-2 pr-4 text-right text-gray-400 font-mono text-xs" x-text="fmtBytes(p.outOctets)"></td>
+                          <td class="py-2 pr-4">
+                            <span x-text="poeStatus(p.index)" :class="poeStatusColor(p.index)" class="text-xs"></span>
+                          </td>
+                          <td class="py-2 pr-4 text-right font-mono text-xs"
+                              x-text="poeWatts(p.index) !== null ? poeWatts(p.index) + 'W' : '—'"></td>
+                          <td class="py-2 text-right" @click.stop>
+                            <div class="flex items-center justify-end gap-1">
+                              <button @click.stop="portAction(p.index, {type:'port_admin', enable: p.adminStatus !== 1})"
+                                      :title="p.adminStatus === 1 ? 'Disable port' : 'Enable port'"
+                                      class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded transition-colors"
+                                      x-text="p.adminStatus === 1 ? 'Disable' : 'Enable'">
+                              </button>
+                              <template x-if="selectedDevice?.adapter_type === 'dlink' && poePortData(p.index)">
+                                <button @click.stop="portAction(p.index, {type:'port_poe', enable: poePortData(p.index)?.detectionStatus === 'disabled' || !poePortData(p.index)?.adminEnabled})"
+                                        :title="poePortData(p.index)?.adminEnabled ? 'Disable PoE' : 'Enable PoE'"
+                                        class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded transition-colors"
+                                        x-text="poePortData(p.index)?.adminEnabled ? 'PoE Off' : 'PoE On'">
+                                </button>
+                              </template>
+                            </div>
+                          </td>
+                        </tr>
+                      </template>
+                      <tr x-show="filteredPorts.length === 0">
+                        <td colspan="12" class="py-8 text-center text-gray-500">No ports match filter.</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </template>
+
+            <!-- ── PoE Summary ── -->
+            <template x-if="tab === 'poe'">
+              <div>
+                <template x-if="detail.poe">
+                  <div>
+                    <!-- Summary cards -->
+                    <div class="grid grid-cols-3 gap-4 mb-6">
+                      <div class="bg-card border border-border rounded-lg p-4">
+                        <div class="text-xs text-gray-500 mb-1">Total Budget</div>
+                        <div class="text-2xl font-bold text-white" x-text="detail.poe.totalPowerWatts != null ? detail.poe.totalPowerWatts + ' W' : '—'"></div>
+                      </div>
+                      <div class="bg-card border border-border rounded-lg p-4">
+                        <div class="text-xs text-gray-500 mb-1">Consumption</div>
+                        <div class="text-2xl font-bold text-blue-400" x-text="detail.poe.consumptionWatts != null ? detail.poe.consumptionWatts + ' W' : '—'"></div>
+                      </div>
+                      <div class="bg-card border border-border rounded-lg p-4">
+                        <div class="text-xs text-gray-500 mb-1">Active Ports</div>
+                        <div class="text-2xl font-bold text-green-400" x-text="detail.poe.ports.filter(p => p.detectionStatus === 'delivering').length"></div>
+                      </div>
+                    </div>
+
+                    <!-- PoE port table -->
+                    <div class="overflow-x-auto">
+                      <table class="w-full text-sm">
+                        <thead>
+                          <tr class="text-xs text-gray-500 uppercase tracking-wide border-b border-border">
+                            <th class="text-left pb-2 pr-4">Port</th>
+                            <th class="text-left pb-2 pr-4">Admin</th>
+                            <th class="text-left pb-2 pr-4">Status</th>
+                            <th class="text-left pb-2 pr-4">Class</th>
+                            <th class="text-right pb-2 pr-4">Watts</th>
+                            <th class="text-right pb-2">Max W</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <template x-for="p in detail.poe.ports" :key="p.key">
+                            <tr class="border-b border-border/50">
+                              <td class="py-2 pr-4 font-mono text-xs text-gray-400" x-text="p.portIndex"></td>
+                              <td class="py-2 pr-4" :class="p.adminEnabled ? 'text-green-400' : 'text-gray-500'"
+                                  x-text="p.adminEnabled ? 'Enabled' : 'Disabled'"></td>
+                              <td class="py-2 pr-4" :class="poeStatusColor2(p.detectionStatus)"
+                                  x-text="p.detectionStatus"></td>
+                              <td class="py-2 pr-4 text-gray-400" x-text="p.powerClass != null ? 'Class ' + p.powerClass : '—'"></td>
+                              <td class="py-2 pr-4 text-right font-mono text-sm"
+                                  :class="p.powerWatts > 0 ? 'text-blue-300' : 'text-gray-500'"
+                                  x-text="p.powerWatts != null ? p.powerWatts : '—'"></td>
+                              <td class="py-2 text-right font-mono text-xs text-gray-500"
+                                  x-text="p.maxPowerMilliwatts != null ? (p.maxPowerMilliwatts/1000).toFixed(1) : '—'"></td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </template>
+                <div x-show="!detail.poe" class="text-center text-gray-500 py-16">
+                  <i class="fa-solid fa-bolt text-3xl mb-2"></i><p>No PoE data. Try refreshing.</p>
+                </div>
+              </div>
+            </template>
+
+            <!-- ── VLANs ── -->
+            <template x-if="tab === 'vlans'">
+              <div>
+                <!-- Create VLAN inline form (stages a create) -->
+                <div class="bg-card border border-border rounded-lg p-4 mb-4 flex flex-wrap items-end gap-3">
+                  <div>
+                    <label class="block text-xs text-gray-500 mb-1">VID</label>
+                    <input x-model="newVlan.vid" type="number" min="2" max="4094" placeholder="e.g. 100"
+                           class="input w-24">
+                  </div>
+                  <div>
+                    <label class="block text-xs text-gray-500 mb-1">Name</label>
+                    <input x-model="newVlan.name" placeholder="e.g. office" maxlength="32"
+                           class="input w-48">
+                  </div>
+                  <button @click="createVlan()"
+                          class="bg-blue-600 hover:bg-blue-500 text-white text-sm px-3 py-1.5 rounded transition-colors">
+                    <i class="fa-solid fa-plus mr-1"></i>Create VLAN
+                  </button>
+                  <div class="text-xs text-gray-500 ml-auto">
+                    Edits stage until you click <span class="text-yellow-300">Save</span>. Click name to rename.
+                  </div>
+                </div>
+
+                <!-- VLAN summary table -->
+                <div class="overflow-x-auto mb-4">
+                  <table class="w-full text-sm">
+                    <thead>
+                      <tr class="text-xs text-gray-500 uppercase tracking-wide border-b border-border">
+                        <th class="text-left pb-2 pr-4">VID</th>
+                        <th class="text-left pb-2 pr-4">Name</th>
+                        <th class="text-left pb-2 pr-4">Type</th>
+                        <th class="text-right pb-2 pr-4">Tagged</th>
+                        <th class="text-right pb-2 pr-4">Untagged</th>
+                        <th class="text-right pb-2">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <template x-for="v in vlanTableList" :key="v.vid">
+                        <tr class="border-b border-border/50"
+                            :class="{
+                              'opacity-50 line-through': v._pendingDelete,
+                              'bg-green-500/5': v._pendingCreate,
+                            }">
+                          <td class="py-2 pr-4 font-mono text-xs text-gray-300">
+                            <span x-text="v.vid"></span>
+                            <template x-if="v._pendingCreate">
+                              <span class="ml-1 text-[10px] uppercase tracking-wider bg-green-500/15 text-green-300 border border-green-500/30 rounded px-1 py-0.5 no-underline">new</span>
+                            </template>
+                            <template x-if="v._pendingDelete">
+                              <span class="ml-1 text-[10px] uppercase tracking-wider bg-red-500/15 text-red-300 border border-red-500/30 rounded px-1 py-0.5 no-underline">del</span>
+                            </template>
+                          </td>
+                          <td class="py-2 pr-4">
+                            <input type="text"
+                                   :value="effectiveVlanName(v)"
+                                   @change="v._pendingCreate ? (pendingVlanCreates[v.vid] = $event.target.value.trim()) : stageVlanRename(v.vid, $event.target.value)"
+                                   :disabled="v._pendingDelete"
+                                   :class="v._pendingRename ? 'ring-2 ring-yellow-400' : ''"
+                                   class="bg-transparent border border-transparent hover:border-border/60 focus:border-blue-500 focus:bg-bg rounded px-1.5 py-0.5 text-white text-sm w-40 focus:outline-none disabled:cursor-not-allowed disabled:hover:border-transparent">
+                          </td>
+                          <td class="py-2 pr-4 text-gray-500 text-xs" x-text="v.type"></td>
+                          <td class="py-2 pr-4 text-right text-blue-300 font-mono" x-text="v.tagged.length"></td>
+                          <td class="py-2 pr-4 text-right text-green-300 font-mono" x-text="v.untagged.length"></td>
+                          <td class="py-2 text-right no-underline">
+                            <template x-if="v._pendingCreate">
+                              <button @click="unstageVlanCreate(v.vid)" title="Cancel pending create"
+                                      class="text-xs px-2 py-1 rounded text-gray-400 hover:text-gray-200 transition-colors">
+                                <i class="fa-solid fa-xmark"></i>
+                              </button>
+                            </template>
+                            <template x-if="!v._pendingCreate && v._pendingDelete">
+                              <button @click="unstageVlanDelete(v.vid)" title="Restore (cancel pending delete)"
+                                      class="text-xs px-2 py-1 rounded text-gray-400 hover:text-gray-200 transition-colors">
+                                <i class="fa-solid fa-rotate-left"></i>
+                              </button>
+                            </template>
+                            <template x-if="!v._pendingCreate && !v._pendingDelete">
+                              <button @click="deleteVlan(v.vid)"
+                                      :disabled="v.vid === 1"
+                                      :class="v.vid === 1 ? 'text-gray-600 cursor-not-allowed' : 'text-red-400 hover:text-red-300'"
+                                      :title="v.vid === 1 ? 'Cannot delete the default VLAN' : 'Delete VLAN'"
+                                      class="text-xs px-2 py-1 rounded transition-colors">
+                                <i class="fa-solid fa-trash"></i>
+                              </button>
+                            </template>
+                          </td>
+                        </tr>
+                      </template>
+                      <tr x-show="vlanTableList.length === 0">
+                        <td colspan="6" class="py-8 text-center text-gray-500">No VLAN data. Try refreshing.</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <div class="text-xs text-gray-500 italic">
+                  Tip: open the <span class="text-blue-300">Ports</span> tab and click a port to set its tagged / untagged VLAN membership.
+                </div>
+              </div>
+            </template>
+
+            <!-- ── Hardware (CPU / Memory / PCIe) ── -->
+            <template x-if="tab === 'hardware'">
+              <div x-data="{ hwTab: 'cpu' }">
+                <!-- sub-tabs -->
+                <div class="flex gap-4 mb-4 text-sm border-b border-border pb-2">
+                  <template x-for="ht in [{id:'cpu',label:'CPUs'},{id:'memory',label:'Memory'},{id:'pcie',label:'PCIe'}]" :key="ht.id">
+                    <button @click="hwTab = ht.id"
+                            :class="hwTab === ht.id ? 'text-blue-400 border-b-2 border-blue-500 -mb-2.5' : 'text-gray-400 hover:text-gray-200'"
+                            x-text="ht.label" class="pb-1 transition-colors"></button>
+                  </template>
+                </div>
+
+                <!-- CPUs -->
+                <template x-if="hwTab === 'cpu'">
+                  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <template x-for="(cpu, i) in detail.hardware?.cpus ?? []" :key="i">
+                      <div class="bg-card border border-border rounded-lg p-4">
+                        <div class="font-semibold text-white mb-2">CPU <span x-text="cpu.id"></span></div>
+                        <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                          <!-- Alpine x-for needs a single root child; `contents` lets the kv pair flow into the grid. -->
+                          <template x-for="kv in cpuKV(cpu)" :key="kv.k">
+                            <div class="contents">
+                              <div class="text-gray-500" x-text="kv.k"></div>
+                              <div class="text-gray-200" x-text="kv.v"></div>
+                            </div>
+                          </template>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+
+                <!-- Memory -->
+                <template x-if="hwTab === 'memory'">
+                  <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                      <thead>
+                        <tr class="text-xs text-gray-500 uppercase tracking-wide border-b border-border">
+                          <th class="text-left pb-2 pr-4">Slot</th>
+                          <th class="text-left pb-2 pr-4">Location</th>
+                          <th class="text-right pb-2 pr-4">Size</th>
+                          <th class="text-right pb-2 pr-4">Speed</th>
+                          <th class="text-left pb-2 pr-4">Type</th>
+                          <th class="text-left pb-2">Serial</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <template x-for="(m, i) in detail.hardware?.memory ?? []" :key="i">
+                          <tr class="border-b border-border/50">
+                            <td class="py-2 pr-4 text-gray-400 font-mono text-xs" x-text="m.id || (i+1)"></td>
+                            <td class="py-2 pr-4" x-text="m.location || m.bank || '—'"></td>
+                            <td class="py-2 pr-4 text-right font-semibold text-blue-300" x-text="memSize(m)"></td>
+                            <td class="py-2 pr-4 text-right text-gray-400" x-text="(m.speedMHz || m.speed || m.speedMhz || '—') + (m.speedMHz || m.speed || m.speedMhz ? ' MHz' : '')"></td>
+                            <td class="py-2 pr-4 text-gray-400" x-text="m.type || m.memoryDeviceType || '—'"></td>
+                            <td class="py-2 font-mono text-xs text-gray-500" x-text="m.serial || '—'"></td>
+                          </tr>
+                        </template>
+                      </tbody>
+                    </table>
+                  </div>
+                </template>
+
+                <!-- PCIe -->
+                <template x-if="hwTab === 'pcie'">
+                  <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                      <thead>
+                        <tr class="text-xs text-gray-500 uppercase tracking-wide border-b border-border">
+                          <th class="text-left pb-2 pr-4">Slot</th>
+                          <th class="text-left pb-2 pr-4">Model</th>
+                          <th class="text-left pb-2 pr-4">Vendor</th>
+                          <th class="text-left pb-2">Class</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <template x-for="(p, i) in detail.hardware?.pcie ?? []" :key="i">
+                          <tr class="border-b border-border/50">
+                            <td class="py-2 pr-4 text-gray-400 font-mono text-xs" x-text="p.id"></td>
+                            <td class="py-2 pr-4 text-white" x-text="p.model || '—'"></td>
+                            <td class="py-2 pr-4 text-gray-400" x-text="p.vendor || p.manufacturer || '—'"></td>
+                            <td class="py-2 text-gray-500 text-xs" x-text="p.class || p.pciClass || '—'"></td>
+                          </tr>
+                        </template>
+                      </tbody>
+                    </table>
+                  </div>
+                </template>
+              </div>
+            </template>
+
+            <!-- ── Storage ── -->
+            <template x-if="tab === 'storage'">
+              <div>
+                <!-- Controllers -->
+                <template x-if="(detail.storage?.controllers ?? []).length > 0">
+                  <div class="mb-6">
+                    <h3 class="text-xs text-gray-500 uppercase tracking-wide mb-2">Controllers</h3>
+                    <div class="flex flex-wrap gap-3">
+                      <template x-for="(c, i) in detail.storage?.controllers ?? []" :key="i">
+                        <div class="bg-card border border-border rounded px-3 py-2 text-sm">
+                          <span class="text-white" x-text="c.model || c.name || ('Controller ' + (i+1))"></span>
+                          <span class="text-gray-500 ml-2 text-xs" x-text="c.type || c.raid || ''"></span>
+                          <span x-show="c.health" :class="healthColor(c.health)"
+                                class="ml-2 text-xs" x-text="c.health"></span>
+                        </div>
+                      </template>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- Disks -->
+                <div class="overflow-x-auto">
+                  <table class="w-full text-sm">
+                    <thead>
+                      <tr class="text-xs text-gray-500 uppercase tracking-wide border-b border-border">
+                        <th class="text-left pb-2 pr-4">ID</th>
+                        <th class="text-left pb-2 pr-4">Model</th>
+                        <th class="text-left pb-2 pr-4">Interface</th>
+                        <th class="text-left pb-2 pr-4">Type</th>
+                        <th class="text-right pb-2 pr-4">Size</th>
+                        <th class="text-left pb-2 pr-4">State</th>
+                        <th class="text-left pb-2 pr-4">Health</th>
+                        <th class="text-left pb-2">Serial</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <template x-for="(d, i) in detail.storage?.disks ?? []" :key="i">
+                        <tr class="border-b border-border/50 hover:bg-card/50">
+                          <td class="py-2 pr-4 font-mono text-xs text-gray-400" x-text="d.id || (i+1)"></td>
+                          <td class="py-2 pr-4 text-white" x-text="d.model || d.name || '—'"></td>
+                          <td class="py-2 pr-4 text-gray-400" x-text="d.interface || d.protocol || d.interfaceType || '—'"></td>
+                          <td class="py-2 pr-4">
+                            <span :class="d.mediaType === 'SSD' ? 'text-blue-400' : 'text-amber-400'"
+                                  x-text="d.mediaType || '—'"></span>
+                          </td>
+                          <td class="py-2 pr-4 text-right font-semibold" x-text="diskSize(d)"></td>
+                          <td class="py-2 pr-4 text-gray-400 text-xs" x-text="d.state || d.diskState || '—'"></td>
+                          <td class="py-2 pr-4 text-xs" :class="healthColor(d.health)" x-text="d.health || '—'"></td>
+                          <td class="py-2 font-mono text-xs text-gray-500" x-text="d.serial || d.serialNumber || '—'"></td>
+                        </tr>
+                      </template>
+                      <tr x-show="(detail.storage?.disks ?? []).length === 0">
+                        <td colspan="8" class="py-8 text-center text-gray-500">No disk data.</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </template>
+
+            <!-- ── Network (server) ── -->
+            <template x-if="tab === 'network'">
+              <div>
+                <h3 class="text-xs text-gray-500 uppercase tracking-wide mb-2">Network Interfaces</h3>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+                  <template x-for="(a, i) in detail.network?.adapters ?? []" :key="i">
+                    <div class="bg-card border border-border rounded-lg p-4">
+                      
+                      <div class="flex items-center justify-between mb-2">
+                        <div class="flex items-center gap-2">
+                          <span class="w-2 h-2 rounded-full shrink-0" 
+                                :class="a.link === 'LinkUp' ? 'bg-green-400' : 'bg-gray-600'"></span>
+                          <span class="font-medium text-white" x-text="a.model || a.name || ('NIC ' + (i+1))"></span>
+                        </div>
+                        <span x-show="a.health" :class="healthColor(a.health)" class="text-xs font-medium" x-text="a.health"></span>
+                      </div>
+
+                      <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
+                        <template x-if="a.link">
+                          <div class="contents">
+                            <dt class="text-gray-500">State</dt>
+                            <dd :class="a.link === 'LinkUp' ? 'text-green-400' : 'text-gray-500'" 
+                                x-text="a.link === 'LinkUp' ? 'Connected' : 'Disconnected'"></dd>
+                          </div>
+                        </template>
+
+                        <template x-if="a.mac">
+                          <div class="contents">
+                            <dt class="text-gray-500">MAC</dt>
+                            <dd class="font-mono text-gray-300" x-text="a.mac"></dd>
+                          </div>
+                        </template>
+                        
+                        <template x-if="a.speed">
+                          <div class="contents">
+                            <dt class="text-gray-500">Speed</dt>
+                            <dd class="text-gray-300" x-text="a.speed + ' Mbps'"></dd>
+                          </div>
+                        </template>
+                      </dl>
+                      
+                    </div>
+                  </template>
+                </div>
+                
+                <template x-if="detail.network?.ports?.length">
+                  <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                      <thead>
+                        <tr class="text-xs text-gray-500 uppercase tracking-wide border-b border-border">
+                          <th class="text-left pb-2 pr-4">Port ID</th>
+                          <th class="text-left pb-2">MAC</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <template x-for="(p, i) in detail.network.ports" :key="i">
+                          <tr class="border-b border-border/50">
+                            <td class="py-2 pr-4 text-gray-400" x-text="p.id"></td>
+                            <td class="py-2 font-mono text-xs text-gray-300" x-text="p.mac || '—'"></td>
+                          </tr>
+                        </template>
+                      </tbody>
+                    </table>
+                  </div>
+                </template>
+              </div>
+            </template>
+            <!-- ── Power ── -->
+            <template x-if="tab === 'power'">
+              <div>
+                <template x-if="detail.power">
+                  <div>
+                    <!-- Budget -->
+                    <template x-if="detail.power.budget || detail.power.consumedWatts != null || detail.power.totalWatts != null">
+                      <div class="grid grid-cols-3 gap-4 mb-6">
+                        <div class="bg-card border border-border rounded-lg p-4">
+                          <div class="text-xs text-gray-500 mb-1">Budget</div>
+                          <div class="text-2xl font-bold text-white"
+                               x-text="detail.power.budget?.budgetWatts != null ? detail.power.budget.budgetWatts + ' W' : '—'"></div>
+                        </div>
+                        <div class="bg-card border border-border rounded-lg p-4">
+                          <div class="text-xs text-gray-500 mb-1">Total Draw</div>
+                          <div class="text-2xl font-bold text-blue-400"
+                               x-text="(detail.power.totalWatts ?? detail.power.budget?.consumedWatts ?? detail.power.consumedWatts) != null ? (detail.power.totalWatts ?? detail.power.budget?.consumedWatts ?? detail.power.consumedWatts) + ' W' : '—'"></div>
+                          <div x-show="detail.power.totalWatts != null" class="text-[10px] text-gray-500 mt-1">live · IPMI</div>
+                        </div>
+                        <div class="bg-card border border-border rounded-lg p-4">
+                          <div class="text-xs text-gray-500 mb-1">Profile</div>
+                          <div class="text-sm text-gray-300" x-text="detail.power.budget?.profileType || '—'"></div>
+                        </div>
+                      </div>
+                    </template>
+
+                    <!-- PSUs -->
+                    <h3 class="text-xs text-gray-500 uppercase tracking-wide mb-2">Power Supplies</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <template x-for="(psu, i) in (detail.power.psus ?? detail.power.supplies ?? [])" :key="i">
+                        <div class="bg-card border border-border rounded-lg p-4">
+                          <div class="flex items-center justify-between mb-2">
+                            <span class="font-medium text-white" x-text="psu.name || psu.model || ('PSU ' + (i+1))"></span>
+                            <span :class="healthColor(psu.health || psu.operState)"
+                                  class="text-xs" x-text="psu.health || psu.operState || psu.state || '—'"></span>
+                          </div>
+                          <dl class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                            <dt class="text-gray-500">Max Output</dt>
+                            <dd class="text-gray-200" x-text="(psu.maxOutputWatts || psu.capacityWatts || psu.maxOutput || '—') + (psu.maxOutputWatts || psu.capacityWatts ? ' W' : '')"></dd>
+                            <dt class="text-gray-500">Input (AC)</dt>
+                            <dd class="text-gray-200 font-mono" x-text="psu.inputWatts != null ? psu.inputWatts + ' W' : '—'"></dd>
+                            <template x-if="psu.lastOutputWatts != null">
+                              <dt class="text-gray-500">Output (DC)</dt>
+                            </template>
+                            <template x-if="psu.lastOutputWatts != null">
+                              <dd class="text-gray-200 font-mono" x-text="psu.lastOutputWatts + ' W'"></dd>
+                            </template>
+                            <dt x-show="psu.serial" class="text-gray-500">Serial</dt>
+                            <dd x-show="psu.serial" class="font-mono text-xs text-gray-400" x-text="psu.serial"></dd>
+                          </dl>
+                        </div>
+                      </template>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </template>
+
+            <!-- ── Sensors ── -->
+            <template x-if="tab === 'sensors'">
+              <div>
+                <div x-show="detail.sensors?.source" class="text-[11px] text-gray-500 mb-3">
+                  Source: <span class="uppercase font-mono" x-text="detail.sensors?.source"></span>
+                  <template x-if="detail.sensors?.source === 'xmlapi' && selectedDevice?.adapter_type === 'cimc'">
+                    <span class="ml-2 text-yellow-500/80">
+                      &mdash; enable IPMI over LAN in CIMC for fan RPMs and PSU/voltage readings.
+                    </span>
+                  </template>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <!-- Temperatures -->
+                  <div>
+                    <h3 class="text-xs text-gray-500 uppercase tracking-wide mb-3">Temperatures</h3>
+                    <div class="space-y-2">
+                      <template x-for="(t, i) in (detail.sensors?.temperatures ?? [])" :key="i">
+                        <div class="bg-card border border-border rounded px-3 py-2 flex items-center justify-between">
+                          <span class="text-sm text-gray-300" x-text="t.name"></span>
+                          <span class="font-mono font-bold" :class="t.celsius > 70 ? 'text-red-400' : t.celsius > 50 ? 'text-yellow-400' : 'text-green-400'"
+                                x-text="t.celsius != null ? t.celsius + ' °C' : '—'"></span>
+                        </div>
+                      </template>
+                      <template x-if="(detail.sensors?.temperatures ?? []).length === 0">
+                        <div class="text-xs text-gray-500">No temperature readings.</div>
+                      </template>
+                    </div>
+                  </div>
+
+                  <!-- Fans -->
+                  <div>
+                    <h3 class="text-xs text-gray-500 uppercase tracking-wide mb-3">Fans</h3>
+                    <div class="space-y-2">
+                      <template x-for="(f, i) in (detail.sensors?.fans ?? [])" :key="i">
+                        <div class="bg-card border border-border rounded px-3 py-2 flex items-center justify-between">
+                          <span class="text-sm text-gray-300" x-text="f.name || ('Fan ' + (f.id || (i+1)))"></span>
+                          <div class="flex items-center gap-3">
+                            <span x-show="f.reading || f.speed" class="font-mono text-sm text-blue-300"
+                                  x-text="(f.reading || f.speed) + ' ' + (f.units || f.readingUnits || 'RPM')"></span>
+                            <span :class="healthColor(f.health || f.operState)"
+                                  class="text-xs" x-text="f.health || f.operState || ''"></span>
+                          </div>
+                        </div>
+                      </template>
+                      <template x-if="(detail.sensors?.fans ?? []).length === 0">
+                        <div class="text-xs text-gray-500">No fan readings.</div>
+                      </template>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Voltages (IPMI-only; hidden when empty) -->
+                <div x-show="(detail.sensors?.voltages ?? []).length" class="mt-6">
+                  <h3 class="text-xs text-gray-500 uppercase tracking-wide mb-3">Voltages</h3>
+                  <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    <template x-for="(v, i) in (detail.sensors?.voltages ?? [])" :key="i">
+                      <div class="bg-card border border-border rounded px-3 py-2 flex items-center justify-between">
+                        <span class="text-sm text-gray-300" x-text="v.name"></span>
+                        <div class="flex items-center gap-3">
+                          <span class="font-mono text-sm text-blue-300"
+                                x-text="(v.reading != null ? v.reading : '—') + ' ' + (v.units || 'V')"></span>
+                          <span :class="healthColor(v.health)" class="text-xs" x-text="v.health || ''"></span>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+              </div>
+            </template>
+
+
+<!-- ── Console (KVM / Web) ── -->
+            <template x-if="tab === 'kvm'">
+              <div class="bg-card border border-border rounded-lg p-6 max-w-2xl">
+                <div class="flex items-center gap-3 mb-4">
+                  <i class="fa-solid fa-display text-blue-400 text-xl"></i>
+                  <h3 class="text-white font-semibold text-lg">Remote Management Console</h3>
+                </div>
+
+                <!-- Huawei iBMC Specific (Java JNLP) -->
+                <template x-if="selectedDevice?.adapter_type === 'ibmc'">
+                  <div>
+                    <p class="text-sm text-gray-400 mb-4">
+                      This server uses a Java-based Virtual Console. 
+                    </p>
+                    <div class="bg-black/20 rounded p-3 mb-6 border border-border/50">
+                      <p class="text-xs text-gray-500 leading-relaxed">
+                        <i class="fa-solid fa-info-circle mr-1 text-blue-500"></i>
+                        The dashboard will create a temporary web session to download your 
+                        <code class="text-gray-300">.jnlp</code> file. Open this file with 
+                        <span class="text-gray-300 italic">IcedTea-Web</span> or <span class="text-gray-300 italic">Java Web Start</span>.
+                      </p>
+                    </div>
+                    <a :href="'/api/devices/' + selectedDevice.id + '/kvm.jnlp'"
+                       class="btn-primary inline-flex items-center gap-2"
+                       download>
+                      <i class="fa-solid fa-download"></i> Download iBMC Console (.jnlp)
+                    </a>
+                  </div>
+                </template>
+
+                <!-- CIMC (Legacy Java) -->
+                <template x-if="selectedDevice?.adapter_type === 'cimc'">
+                  <div class="bg-card border border-border rounded-lg p-6 max-w-2xl">
+                    <h3 class="text-white font-semibold text-lg mb-2">
+                      <i class="fa-solid fa-display mr-1.5"></i>Virtual KVM Console
+                    </h3>
+                    <p class="text-sm text-gray-400 mb-3">
+                      Click below to download a Java Web Start file. Open it with
+                      <code class="bg-black/40 px-1 rounded text-gray-300">javaws</code>
+                      to launch the Cisco KVM viewer with live video and keyboard input.
+                    </p>
+                    <p class="text-xs text-gray-500 mb-4">
+                      CIMC 2.0(9f) ships only the Java KVM &mdash; no HTML5 console exists on
+                      this firmware, so an external viewer is the only path. The viewer
+                      connects directly to <code class="text-gray-300" x-text="selectedDevice?.hostname"></code>
+                      on TCP/2068. Tokens are minted fresh each time and expire when the
+                      session ends.
+                    </p>
+                    <a :href="'/api/devices/' + selectedDevice.id + '/kvm.jnlp'"
+                      class="btn-action bg-blue-700 hover:bg-blue-600 inline-flex items-center gap-2"
+                      download>
+                      <i class="fa-solid fa-download"></i> Download KVM .jnlp
+                    </a>
+                    <p class="mt-4 text-[11px] text-gray-500 leading-relaxed">
+                      Requires a JRE with Web Start (e.g. OpenJDK + IcedTea-Web, or Oracle JRE 8).
+                      If Java warns about an unsigned/expired-cert applet, that's the BMC's
+                      self-signed cert &mdash; expected on this firmware.
+                    </p>
+                  </div>
+                </template>
+
+                <!-- Standard Redfish (iDRAC/iLO HTML5) -->
+                <template x-if="['idrac', 'ilo', 'redfish'].includes(selectedDevice?.adapter_type)">
+                    <!-- Your existing Redfish code here -->
+                </template>
+              </div>
+            </template>
+
+
+          </div><!-- /p-6 tab content -->
+        </div>
+      </template>
+
+    </main>
+  </div><!-- /layout -->
+
+  <!-- ── Add / Edit Device Modal ──────────────────────────────────────────── -->
+  <div x-show="showDeviceModal" x-transition class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+    <div @click.stop class="bg-panel border border-border rounded-xl w-full max-w-lg shadow-2xl">
+      <div class="px-6 py-4 border-b border-border flex items-center justify-between">
+        <h2 class="font-semibold text-white" x-text="editingDevice ? 'Edit Device' : 'Add Device'"></h2>
+        <button @click="showDeviceModal = false" class="text-gray-400 hover:text-white">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+      <div class="p-6 space-y-4">
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="label">Name</label>
+            <input x-model="form.name" class="input w-full" placeholder="e.g. Core Switch">
+          </div>
+          <div>
+            <label class="label">Hostname / IP</label>
+            <input x-model="form.hostname" class="input w-full" placeholder="192.168.1.1">
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="label">Device Type</label>
+            <select x-model="form.device_type" class="input w-full">
+              <option value="switch">Switch</option>
+              <option value="server">Server</option>
+              <option value="router">Router</option>
+              <option value="pdu">PDU</option>
+              <option value="ups">UPS</option>
+            </select>
+          </div>
+          <div>
+            <label class="label">Adapter</label>
+            <select x-model="form.adapter_type" class="input w-full">
+              <option value="snmp">SNMP (generic)</option>
+              <option value="dlink">D-Link (SNMP+SSH)</option>
+              <option value="cimc">Cisco CIMC</option>
+              <option value="redfish">Redfish (generic)</option>
+              <option value="ilo">HP iLO (Redfish)</option>
+              <option value="idrac">Dell iDRAC (Redfish)</option>
+              <option value="ibmc">Huawei iBMC (Redfish)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- SNMP / D-Link credentials -->
+        <template x-if="['snmp','dlink'].includes(form.adapter_type)">
+          <div class="space-y-3 border border-border rounded-lg p-4">
+            <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">SNMP</div>
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="label">Community (read)</label>
+                <input x-model="form.credentials.community" class="input w-full" placeholder="public">
+              </div>
+              <div>
+                <label class="label">Community (write)</label>
+                <input x-model="form.credentials.write_community" class="input w-full" placeholder="private">
+              </div>
+            </div>
+            <template x-if="form.adapter_type === 'dlink'">
+              <div class="grid grid-cols-3 gap-3">
+                <div>
+                  <label class="label">SSH User</label>
+                  <input x-model="form.credentials.ssh_username" class="input w-full" placeholder="admin">
+                </div>
+                <div>
+                  <label class="label">SSH Password</label>
+                  <input x-model="form.credentials.ssh_password" type="password" class="input w-full">
+                </div>
+                <div>
+                  <label class="label">SSH Port</label>
+                  <input x-model="form.credentials.ssh_port" class="input w-full" placeholder="22">
+                </div>
+              </div>
+            </template>
+          </div>
+        </template>
+
+        <!-- CIMC / Redfish credentials -->
+        <template x-if="['cimc','redfish','ilo','idrac','ibmc'].includes(form.adapter_type)">
+          <div class="space-y-3 border border-border rounded-lg p-4">
+            <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Credentials</div>
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="label">Username</label>
+                <input x-model="form.credentials.username" class="input w-full" placeholder="admin">
+              </div>
+              <div>
+                <label class="label">Password</label>
+                <input x-model="form.credentials.password" type="password" class="input w-full">
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="label">HTTPS Port</label>
+                <input x-model="form.credentials.port" class="input w-full" placeholder="443">
+              </div>
+              <template x-if="['redfish','ilo','idrac','ibmc'].includes(form.adapter_type)">
+                <div>
+                  <label class="label">System ID</label>
+                  <input x-model="form.credentials.system_id" class="input w-full" placeholder="1">
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+
+        <div>
+          <label class="label">Notes (optional)</label>
+          <input x-model="form.notes" class="input w-full" placeholder="Rack location, comments…">
+        </div>
+      </div>
+      <div class="px-6 py-4 border-t border-border flex items-center justify-between">
+        <button x-show="editingDevice" @click="deleteDevice()"
+                class="text-red-400 hover:text-red-300 text-sm transition-colors">
+          <i class="fa-solid fa-trash mr-1"></i> Delete
+        </button>
+        <div class="flex gap-2 ml-auto">
+          <button @click="showDeviceModal = false" class="btn-secondary">Cancel</button>
+          <button @click="saveDevice()" class="btn-primary">
+            <span x-text="editingDevice ? 'Save' : 'Add'"></span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Confirm Modal ─────────────────────────────────────────────────────── -->
+  <div x-show="confirmModal.show" x-transition class="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+    <div @click.stop class="bg-panel border border-border rounded-xl w-80 shadow-2xl p-6">
+      <div class="text-white font-semibold mb-2">Confirm</div>
+      <div class="text-gray-400 text-sm mb-6" x-text="confirmModal.message"></div>
+      <div class="flex gap-3 justify-end">
+        <button @click="confirmModal.show = false" class="btn-secondary">Cancel</button>
+        <button @click="confirmModal.fn && confirmModal.fn(); confirmModal.show = false" class="btn-danger">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Change Password Modal ─────────────────────────────────────────────── -->
+  <div x-show="passwordModal.show" x-transition class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+    <form @submit.prevent="submitPasswordChange()" @click.stop
+          class="bg-panel border border-border rounded-xl w-96 shadow-2xl p-6 space-y-4">
+      <div class="text-white font-semibold">Change password</div>
+      <div>
+        <label class="block text-xs text-gray-400 mb-1">Current password</label>
+        <input type="password" x-model="passwordModal.current" required autocomplete="current-password"
+               class="input">
+      </div>
+      <div>
+        <label class="block text-xs text-gray-400 mb-1">New password (min 8 chars)</label>
+        <input type="password" x-model="passwordModal.next" required minlength="8" autocomplete="new-password"
+               class="input">
+      </div>
+      <div>
+        <label class="block text-xs text-gray-400 mb-1">Confirm new password</label>
+        <input type="password" x-model="passwordModal.confirm" required minlength="8" autocomplete="new-password"
+               class="input">
+      </div>
+      <div x-show="passwordModal.error" x-text="passwordModal.error"
+           class="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded px-3 py-2"></div>
+      <div class="flex gap-3 justify-end pt-2">
+        <button type="button" @click="passwordModal.show = false" class="btn-secondary">Cancel</button>
+        <button type="submit" :disabled="passwordModal.busy" class="btn-primary">Change password</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- ── Port VLAN-membership popup ────────────────────────────────────────── -->
+  <div x-show="selectedPort && vlanList.length && isSwitch" x-transition.opacity
+       @click.self="selectedPort = null"
+       @keydown.escape.window="selectedPort && (selectedPort = null)"
+       class="fixed inset-0 bg-black/40 z-40 flex items-center justify-center p-4">
+    <div class="bg-card border border-border rounded-lg p-5 w-full max-w-2xl shadow-2xl">
+      <div class="flex items-start justify-between mb-3">
+        <div>
+          <div class="text-xs text-gray-500 uppercase tracking-wide">Port <span x-text="selectedPort"></span></div>
+          <div class="text-base font-semibold text-white"
+               x-text="selectedPortInfo?.name || ('Port ' + selectedPort)"></div>
+          <div class="text-xs text-gray-500 mt-1">
+            PVID:
+            <span class="font-mono text-gray-300" x-text="pvidByPort[selectedPort] || '—'"></span>
+            <span x-show="pvidByPort[selectedPort]"
+                  class="text-gray-600"
+                  x-text="' (' + (vlanList.find(v => v.vid === pvidByPort[selectedPort])?.name || '') + ')'"></span>
+          </div>
+        </div>
+        <button @click="selectedPort = null"
+                class="text-gray-500 hover:text-gray-200 text-base" title="Close (Esc)">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+      <div class="text-xs text-gray-500 mb-3">
+        Click a VLAN to cycle: <span class="text-gray-400">none</span> → <span class="text-blue-300">Tagged</span> → <span class="text-green-300">Untagged</span>.
+        Changes stage until you click <span class="text-yellow-300">Save</span>.
+      </div>
+      <div class="flex flex-wrap gap-2 max-h-80 overflow-y-auto">
+        <template x-for="v in vlanList" :key="v.vid">
+          <button @click="cyclePortVlan(selectedPort, v.vid)"
+                  :class="{
+                    'bg-blue-500/25 text-blue-200 border-blue-500/40':   portVlanMode(selectedPort, v.vid) === 'tagged',
+                    'bg-green-500/25 text-green-200 border-green-500/40': portVlanMode(selectedPort, v.vid) === 'untagged',
+                    'bg-bg text-gray-400 border-border/40 hover:bg-card-hover': portVlanMode(selectedPort, v.vid) === null,
+                    'ring-2 ring-yellow-400 ring-offset-1 ring-offset-card': isPendingCell(selectedPort, v.vid),
+                  }"
+                  class="px-3 py-1.5 rounded text-xs border transition-all flex items-center gap-2">
+            <span class="font-mono font-bold" x-text="v.vid"></span>
+            <span class="text-gray-500" x-text="v.name"></span>
+            <span class="text-[10px] uppercase tracking-wider font-bold w-3 text-right"
+                  x-text="portVlanMode(selectedPort, v.vid) === 'tagged' ? 'T' : portVlanMode(selectedPort, v.vid) === 'untagged' ? 'U' : ''"></span>
+          </button>
+        </template>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Pending VLAN-changes save bar ─────────────────────────────────────── -->
+  <div x-show="pendingChangeCount > 0" x-transition
+       class="fixed bottom-6 right-6 z-40 bg-card border border-yellow-500/40 rounded-lg shadow-2xl px-4 py-3 flex items-center gap-3">
+    <i class="fa-solid fa-circle-exclamation text-yellow-400"></i>
+    <div class="text-sm text-gray-200">
+      <span class="font-bold text-yellow-300" x-text="pendingChangeCount"></span>
+      pending VLAN change<span x-show="pendingChangeCount !== 1">s</span>
+    </div>
+    <button @click="discardVlanChanges()" :disabled="vlanSaving"
+            :class="vlanSaving ? 'opacity-40 cursor-not-allowed' : ''"
+            class="text-xs text-gray-400 hover:text-gray-200 px-2 py-1.5 rounded transition-colors">
+      Discard
+    </button>
+    <button @click="saveVlanChanges()" :disabled="vlanSaving"
+            :class="vlanSaving ? 'opacity-70 cursor-not-allowed' : ''"
+            class="text-sm bg-blue-600 hover:bg-blue-500 text-white px-4 py-1.5 rounded font-medium transition-colors">
+      <i :class="vlanSaving ? 'fa-circle-notch fa-spin' : 'fa-floppy-disk'" class="fa-solid mr-1"></i>
+      <span x-text="vlanSaving ? 'Saving…' : 'Save'"></span>
+    </button>
+  </div>
+
+  <!-- ── Toast ─────────────────────────────────────────────────────────────── -->
+  <div x-show="toast" x-transition
+       :class="[pendingChangeCount > 0 ? 'bottom-24' : 'bottom-6',
+                toast?.type === 'error' ? 'bg-red-600 text-white' : 'bg-green-600 text-white']"
+       class="fixed right-6 z-50 px-4 py-3 rounded-lg shadow-lg text-sm font-medium"
+       x-text="toast?.msg">
+  </div>
+
+  <!-- ── Tailwind utilities for input / btn classes ────────────────────────── -->
+  <!-- type="text/tailwindcss" is required for the Play CDN to process @apply. -->
+  <style type="text/tailwindcss">
+    .label { @apply block text-xs text-gray-400 mb-1 }
+    .input  { @apply bg-card border border-border rounded px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-blue-500 }
+    .btn-primary   { @apply bg-blue-600 hover:bg-blue-700 text-white text-sm px-4 py-2 rounded transition-colors }
+    .btn-secondary { @apply bg-gray-700 hover:bg-gray-600 text-gray-200 text-sm px-4 py-2 rounded transition-colors }
+    .btn-danger    { @apply bg-red-600 hover:bg-red-700 text-white text-sm px-4 py-2 rounded transition-colors }
+    .btn-action    { @apply text-white text-sm px-4 py-2 rounded transition-colors }
+  </style>
+
+  <script>
+  function homelab() {
+    return {
+      // ── state ────────────────────────────────────────────────────────────
+      devices:     [],
+      selectedId:  null,
+      detail:      {},
+      loading:     false,
+      tab:         'overview',
+      portFilter:  '',
+      selectedPort: null,
+      toast:       null,
+      showDeviceModal: false,
+      editingDevice:   null,
+      confirmModal:    { show: false, message: '', fn: null },
+      passwordModal:   { show: false, current: '', next: '', confirm: '', error: '', busy: false },
+      username:        '',
+      form: {},
+
+      // ── lifecycle ────────────────────────────────────────────────────────
+      async init() {
+        // Redirect to /login on any 401 from the API. Single global hook so
+        // every existing fetch() call gets the behaviour for free.
+        const origFetch = window.fetch.bind(window);
+        window.fetch = async (...args) => {
+          const r = await origFetch(...args);
+          if (r.status === 401) {
+            window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
+          }
+          return r;
+        };
+        await this.loadIdentity();
+        await this.loadDevices();
+        this.connectWebSocket();
+        if (this.selectedId) await this.loadDetail(this.selectedId);
+      },
+
+      async loadIdentity() {
+        try {
+          const r = await fetch('/api/auth/me');
+          if (r.ok) {
+            const data = await r.json();
+            this.username = data.username || '';
+          }
+        } catch (e) { /* ignored — 401 handler will redirect */ }
+      },
+
+      async logout() {
+        try { await fetch('/api/auth/logout', { method: 'POST' }); } catch (e) {}
+        window.location.href = '/login';
+      },
+
+      openPasswordModal() {
+        this.passwordModal = { show: true, current: '', next: '', confirm: '', error: '', busy: false };
+      },
+
+      async submitPasswordChange() {
+        const m = this.passwordModal;
+        m.error = '';
+        if (m.next !== m.confirm) { m.error = 'New passwords do not match'; return; }
+        m.busy = true;
+        try {
+          const r = await fetch('/api/auth/change-password', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ current_password: m.current, new_password: m.next }),
+          });
+          if (r.ok) {
+            m.show = false;
+            this.showToast('Password changed');
+          } else {
+            const data = await r.json().catch(() => ({}));
+            m.error = data.detail || 'Failed to change password';
+          }
+        } finally {
+          m.busy = false;
+        }
+      },
+
+      // ── websockets ────────────────────────────────────────────────────────
+      connectWebSocket() {
+        // Automatically determine if we need ws:// or wss:// based on the page URL
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/api/ws`;
+        this.ws = new WebSocket(wsUrl);
+
+        this.ws.onmessage = async (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.event === 'device_updated') {
+              // The backend says a device was just polled!
+              // 1. Update the dashboard list (updates the status dots and last_seen)
+              await this.loadDevices();
+              
+              // 2. If we are currently looking at this exact device, refresh its details immediately
+              if (this.selectedId === data.device_id) {
+                await this.loadDetail(this.selectedId);
+              }
+            }
+          } catch (e) {
+            console.error("Error parsing websocket message", e);
+          }
+        };
+
+        this.ws.onclose = () => {
+          // If the backend restarts or the connection drops, try to reconnect after 5 seconds
+          setTimeout(() => this.connectWebSocket(), 5000);
+        };
+      },
+
+      // ── data fetching ─────────────────────────────────────────────────────
+      async loadDevices() {
+        try {
+          const r = await fetch('/api/devices');
+          this.devices = await r.json();
+        } catch(e) { this.showToast('Failed to load devices', 'error'); }
+      },
+
+      async loadDetail(id) {
+        this.loading = true;
+        try {
+          const r = await fetch(`/api/devices/${id}/cache`);
+          this.detail = await r.json();
+        } catch(e) {
+          this.showToast('Failed to load device data', 'error');
+        } finally {
+          this.loading = false;
+        }
+      },
+
+      async selectDevice(id) {
+        this.selectedId = id;
+        this.tab = 'overview';
+        this.detail = {};
+        this.pendingVlanChanges = {};
+        await this.loadDetail(id);
+      },
+
+      async refresh() {
+        if (!this.selectedId) return;
+        this.loading = true;
+        try {
+          await fetch(`/api/devices/${this.selectedId}/refresh`, { method: 'POST' });
+          await this.loadDetail(this.selectedId);
+          await this.loadDevices();
+          this.showToast('Refreshed');
+        } finally {
+          this.loading = false;
+        }
+      },
+
+      // ── actions ───────────────────────────────────────────────────────────
+      async action(type, extra = {}) {
+        const r = await fetch(`/api/devices/${this.selectedId}/action`, {
+          method:  'POST',
+          headers: {'Content-Type': 'application/json'},
+          body:    JSON.stringify({ type, ...extra }),
+        });
+        const data = await r.json();
+        if (data.error) this.showToast(data.error, 'error');
+        else            this.showToast('Action executed: ' + type);
+      },
+
+      async portAction(portId, action) {
+        const r = await fetch(`/api/devices/${this.selectedId}/port/${portId}/action`, {
+          method:  'POST',
+          headers: {'Content-Type': 'application/json'},
+          body:    JSON.stringify(action),
+        });
+        const data = await r.json();
+        if (data.error) this.showToast(data.error, 'error');
+        else { this.showToast('Port action applied'); await this.refresh(); }
+      },
+
+      // ── VLAN helpers ──────────────────────────────────────────────────────
+      get committedVlans() { return this.detail.vlans?.vlans ?? []; },
+      get pvidByPort()     { return this.detail.vlans?.pvidByPort ?? {}; },
+      get switchPorts() {
+        return (this.detail.ports || []).filter(p => /^\d+$/.test(String(p.index)));
+      },
+      // VLANs visible to the port chips: committed list, minus those staged for
+      // delete, plus pending creates. Sorted by VID.
+      get vlanList() {
+        const committed = this.committedVlans.filter(v => !this.pendingVlanDeletes[v.vid]);
+        const creates = Object.entries(this.pendingVlanCreates).map(([vid, name]) => ({
+          vid: parseInt(vid, 10), name, type: 'Static', tagged: [], untagged: [], _pendingCreate: true,
+        }));
+        return [...committed, ...creates].sort((a, b) => a.vid - b.vid);
+      },
+      // VLANs to render in the VLAN-tab table: union with badges, no filtering.
+      get vlanTableList() {
+        const items = this.committedVlans.map(v => ({
+          ...v,
+          _pendingDelete:  !!this.pendingVlanDeletes[v.vid],
+          _pendingRename:  this.pendingVlanRenames[v.vid] ?? null,
+        }));
+        const creates = Object.entries(this.pendingVlanCreates).map(([vid, name]) => ({
+          vid: parseInt(vid, 10), name, type: 'Static', tagged: [], untagged: [],
+          _pendingCreate: true,
+        }));
+        return [...items, ...creates].sort((a, b) => a.vid - b.vid);
+      },
+      // Effective name (pending rename if any, else committed).
+      effectiveVlanName(v) {
+        return this.pendingVlanRenames[v.vid] ?? v.name;
+      },
+
+      committedPortVlanMode(portIndex, vid) {
+        const vlan = this.committedVlans.find(v => v.vid === vid);
+        if (!vlan) return null;
+        const label = `1:${portIndex}`;
+        if (vlan.tagged.includes(label))   return 'tagged';
+        if (vlan.untagged.includes(label)) return 'untagged';
+        return null;
+      },
+      portVlanMode(portIndex, vid) {
+        const key = `${portIndex}:${vid}`;
+        if (key in this.pendingVlanChanges) {
+          const m = this.pendingVlanChanges[key];
+          return m === 'none' ? null : m;
+        }
+        return this.committedPortVlanMode(portIndex, vid);
+      },
+      isPendingCell(portIndex, vid) {
+        return `${portIndex}:${vid}` in this.pendingVlanChanges;
+      },
+
+      pendingVlanChanges: {},   // { "<portIdx>:<vid>": 'tagged'|'untagged'|'none' }
+      pendingVlanCreates: {},   // { <vid>: name }
+      pendingVlanDeletes: {},   // { <vid>: true }
+      pendingVlanRenames: {},   // { <vid>: newName }
+      get pendingChangeCount() {
+        return Object.keys(this.pendingVlanChanges).length
+             + Object.keys(this.pendingVlanCreates).length
+             + Object.keys(this.pendingVlanDeletes).length
+             + Object.keys(this.pendingVlanRenames).length;
+      },
+
+      cyclePortVlan(portIndex, vid) {
+        const committed = this.committedPortVlanMode(portIndex, vid);
+        const cur       = this.portVlanMode(portIndex, vid);
+        const next      = cur === 'tagged' ? 'untagged' : cur === 'untagged' ? null : 'tagged';
+        const nextStage = next === null ? 'none' : next;
+        const key = `${portIndex}:${vid}`;
+        if ((committed ?? null) === next) delete this.pendingVlanChanges[key];
+        else                              this.pendingVlanChanges[key] = nextStage;
+      },
+
+      // Stage a VLAN create. Validated up-front; persisted on Save.
+      stageVlanCreate(vid, name) {
+        vid = parseInt(vid, 10);
+        if (!vid || vid < 2 || vid > 4094) { this.showToast('VID must be 2..4094', 'error'); return; }
+        if (!/^[A-Za-z0-9_\-]{1,32}$/.test(name)) {
+          this.showToast('Name: 1-32 chars, letters/digits/_/-', 'error'); return;
+        }
+        if (this.committedVlans.some(v => v.vid === vid)) {
+          this.showToast(`VLAN ${vid} already exists on switch`, 'error'); return;
+        }
+        if (vid in this.pendingVlanCreates) {
+          this.showToast(`VLAN ${vid} already staged`, 'error'); return;
+        }
+        this.pendingVlanCreates[vid] = name;
+      },
+      unstageVlanCreate(vid) {
+        delete this.pendingVlanCreates[vid];
+        // Drop any pending port-changes targeting the orphaned VID.
+        for (const k of Object.keys(this.pendingVlanChanges)) {
+          if (k.endsWith(`:${vid}`)) delete this.pendingVlanChanges[k];
+        }
+      },
+
+      // Stage a VLAN delete. Auto-stages `none` for every committed member of
+      // the VLAN so the backend's delete-vlan command isn't rejected for
+      // having members. Refused for VID 1.
+      stageVlanDelete(vid) {
+        if (vid === 1) { this.showToast('Cannot delete the default VLAN', 'error'); return; }
+        if (vid in this.pendingVlanCreates) { this.unstageVlanCreate(vid); return; }
+        this.pendingVlanDeletes[vid] = true;
+        const v = this.committedVlans.find(x => x.vid === vid);
+        if (!v) return;
+        for (const portLabel of [...(v.tagged || []), ...(v.untagged || [])]) {
+          const idx = portLabel.includes(':') ? portLabel.split(':')[1] : portLabel;
+          this.pendingVlanChanges[`${idx}:${vid}`] = 'none';
+        }
+      },
+      unstageVlanDelete(vid) {
+        delete this.pendingVlanDeletes[vid];
+        // Roll back any auto-staged 'none' entries we created — but only the
+        // ones that match the committed membership (i.e. were a no-op except
+        // for the deletion). Hand-edited entries stay.
+        const v = this.committedVlans.find(x => x.vid === vid);
+        if (!v) return;
+        const members = new Set([...(v.tagged || []), ...(v.untagged || [])]);
+        for (const k of Object.keys(this.pendingVlanChanges)) {
+          if (!k.endsWith(`:${vid}`) || this.pendingVlanChanges[k] !== 'none') continue;
+          const portIdx = k.split(':')[0];
+          if (members.has(`1:${portIdx}`)) delete this.pendingVlanChanges[k];
+        }
+      },
+
+      // Stage a VLAN rename. Empty/unchanged name unstages the rename.
+      stageVlanRename(vid, newName) {
+        const orig = this.committedVlans.find(v => v.vid === vid);
+        if (!orig) return;
+        const trimmed = (newName || '').trim();
+        if (!trimmed || trimmed === orig.name) {
+          delete this.pendingVlanRenames[vid];
+          return;
+        }
+        if (!/^[A-Za-z0-9_\-]{1,32}$/.test(trimmed)) {
+          this.showToast('Name: 1-32 chars, letters/digits/_/-', 'error'); return;
+        }
+        this.pendingVlanRenames[vid] = trimmed;
+      },
+
+      discardVlanChanges() {
+        this.pendingVlanChanges = {};
+        this.pendingVlanCreates = {};
+        this.pendingVlanDeletes = {};
+        this.pendingVlanRenames = {};
+      },
+
+      vlanSaving: false,
+      async saveVlanChanges() {
+        if (this.vlanSaving) return;
+        if (this.pendingChangeCount === 0) return;
+
+        const creates = Object.entries(this.pendingVlanCreates).map(([vid, name]) => ({
+          vid: parseInt(vid, 10), name,
+        }));
+        const renames = Object.entries(this.pendingVlanRenames).map(([vid, name]) => ({
+          vid: parseInt(vid, 10), name,
+        }));
+        const deletes = Object.keys(this.pendingVlanDeletes).map(v => parseInt(v, 10));
+        const changes = Object.entries(this.pendingVlanChanges).map(([key, mode]) => {
+          const [port_id, vidStr] = key.split(':');
+          return { port_id, vid: parseInt(vidStr, 10), mode };
+        });
+
+        this.vlanSaving = true;
+        this.loading = true;
+        try {
+          const r = await fetch(`/api/devices/${this.selectedId}/action`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ type: 'vlan_batch', creates, renames, deletes, changes }),
+          });
+          const data = await r.json();
+          const total = creates.length + renames.length + deletes.length + changes.length;
+          if (data.ok) {
+            this.showToast(`Applied ${total} VLAN change${total === 1 ? '' : 's'}`);
+            this.discardVlanChanges();
+            await this.refresh();
+            return;
+          }
+          const errs = data.errors || [];
+          const firstMsg = errs[0]?.error || 'one or more changes failed';
+          this.showToast(`${errs.length} of ${total} failed: ${firstMsg}`, 'error');
+          // Conservative: keep everything staged so the user can review and
+          // retry; partial-rollback is fiddly when create/delete/changes are
+          // interlinked. They can hit Discard if they want a clean slate.
+          await this.refresh();
+        } finally {
+          this.vlanSaving = false;
+          this.loading = false;
+        }
+      },
+
+      newVlan: { vid: '', name: '' },
+      // Create-VLAN button now stages instead of calling the API directly.
+      createVlan() {
+        this.stageVlanCreate(this.newVlan.vid, this.newVlan.name);
+        // Only clear the form if staging succeeded (toast handles the error case).
+        const v = parseInt(this.newVlan.vid, 10);
+        if (v in this.pendingVlanCreates) this.newVlan = { vid: '', name: '' };
+      },
+      // Delete button now stages a delete. Click again to undo.
+      deleteVlan(vid) {
+        if (this.pendingVlanDeletes[vid]) this.unstageVlanDelete(vid);
+        else                              this.stageVlanDelete(vid);
+      },
+
+      // ── device CRUD ───────────────────────────────────────────────────────
+      openAddModal() {
+        this.editingDevice = null;
+        this.form = {
+          name: '', hostname: '', device_type: 'switch', adapter_type: 'snmp',
+          // Pre-create every key any adapter form binds to. x-model on a missing
+          // nested key sometimes fails to write through to the saved object.
+          credentials: {
+            community: '', write_community: '',
+            ssh_username: '', ssh_password: '', ssh_port: 22,
+            username: '', password: '', port: 443, system_id: '1',
+          },
+          notes: '',
+        };
+        this.showDeviceModal = true;
+      },
+
+      openEditModal(d) {
+        this.editingDevice = d;
+        this.form = {
+          name:         d.name,
+          hostname:     d.hostname,
+          device_type:  d.device_type,
+          adapter_type: d.adapter_type,
+          credentials:  { ...(d.credentials || {}) },
+          notes:        d.notes || '',
+        };
+        this.showDeviceModal = true;
+      },
+
+      async saveDevice() {
+        const body = JSON.stringify({
+          name:         this.form.name,
+          hostname:     this.form.hostname,
+          device_type:  this.form.device_type,
+          adapter_type: this.form.adapter_type,
+          credentials:  this.form.credentials,
+          notes:        this.form.notes,
+        });
+        if (this.editingDevice) {
+          await fetch(`/api/devices/${this.editingDevice.id}`, {
+            method: 'PUT', headers: {'Content-Type': 'application/json'}, body,
+          });
+        } else {
+          await fetch('/api/devices', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body,
+          });
+        }
+        this.showDeviceModal = false;
+        await this.loadDevices();
+        this.showToast(this.editingDevice ? 'Device updated' : 'Device added');
+      },
+
+      async deleteDevice() {
+        this.confirm(`Delete "${this.editingDevice.name}"?`, async () => {
+          await fetch(`/api/devices/${this.editingDevice.id}`, { method: 'DELETE' });
+          this.showDeviceModal = false;
+          if (this.selectedId === this.editingDevice.id) { this.selectedId = null; this.detail = {}; }
+          await this.loadDevices();
+          this.showToast('Device deleted');
+        });
+      },
+
+      // ── helpers ───────────────────────────────────────────────────────────
+      confirm(message, fn) {
+        this.confirmModal = { show: true, message, fn };
+      },
+
+      showToast(msg, type = 'success') {
+        this.toast = { msg, type };
+        setTimeout(() => this.toast = null, 3500);
+      },
+
+      get selectedDevice() {
+        return this.devices.find(d => d.id === this.selectedId);
+      },
+
+      get isSwitch() {
+        return ['switch','router'].includes(this.selectedDevice?.device_type);
+      },
+
+      get isServer() {
+        return this.selectedDevice?.device_type === 'server';
+      },
+
+      get deviceGroups() {
+        const groups = {};
+        for (const d of this.devices) {
+          if (!groups[d.device_type]) groups[d.device_type] = [];
+          groups[d.device_type].push(d);
+        }
+        return Object.entries(groups);
+      },
+
+      get availableTabs() {
+        if (this.isSwitch) return [
+          { id: 'overview', label: 'Overview',  icon: 'fa-solid fa-gauge' },
+          { id: 'ports',    label: 'Ports',     icon: 'fa-solid fa-network-wired' },
+          { id: 'poe',      label: 'PoE',       icon: 'fa-solid fa-bolt' },
+          { id: 'vlans',    label: 'VLANs',     icon: 'fa-solid fa-sitemap' },
+        ];
+        if (this.isServer) {
+          const tabs = [
+            { id: 'overview', label: 'Overview',  icon: 'fa-solid fa-gauge' },
+            { id: 'hardware', label: 'Hardware',  icon: 'fa-solid fa-microchip' },
+            { id: 'storage',  label: 'Storage',   icon: 'fa-solid fa-hard-drive' },
+            { id: 'network',  label: 'Network',   icon: 'fa-solid fa-ethernet' },
+            { id: 'power',    label: 'Power',     icon: 'fa-solid fa-plug' },
+            { id: 'sensors',  label: 'Sensors',   icon: 'fa-solid fa-thermometer-half' },
+          ];
+          // Enable the KVM/Console tab for both Cisco and Huawei
+          if (['cimc', 'ibmc'].includes(this.selectedDevice?.adapter_type)) {
+            tabs.push({ id: 'kvm', label: 'Console', icon: 'fa-solid fa-display' });
+          }
+          return tabs;
+        }
+        return [{ id: 'overview', label: 'Overview', icon: 'fa-solid fa-gauge' }];
+      },
+
+      typeLabel(t) {
+        return ({ switch:'Switches', server:'Servers', router:'Routers', pdu:'PDUs', ups:'UPS' })[t] || t;
+      },
+
+      statusDot(d) {
+        if (!d.last_seen)       return 'bg-gray-600';
+        if (d.status_error)     return 'bg-red-500';
+        if (d.status?.online === false) return 'bg-red-500';
+        return 'bg-green-400';
+      },
+
+      // ── port helpers ──────────────────────────────────────────────────────
+      get filteredPorts() {
+        const ports = this.detail.ports || [];
+        if (!this.portFilter) return ports;
+        const q = this.portFilter.toLowerCase();
+        return ports.filter(p =>
+          String(p.index).includes(q) || (p.name || '').toLowerCase().includes(q) || (p.alias || '').toLowerCase().includes(q)
+        );
+      },
+
+      get portSummary() {
+        const ports = this.detail.ports || [];
+        const up = ports.filter(p => p.operStatus === 1).length;
+        return `${up} of ${ports.length} ports up`;
+      },
+
+      // Front-panel layout: ports laid out in two rows, odd on top / even on bottom.
+      get panelRows() {
+        const ports = (this.detail.ports || []).filter(p => /^\d+$/.test(String(p.index)));
+        ports.sort((a, b) => Number(a.index) - Number(b.index));
+        const odd  = ports.filter(p => Number(p.index) % 2 === 1);
+        const even = ports.filter(p => Number(p.index) % 2 === 0);
+        return [odd, even];
+      },
+
+      portColor(p) {
+        if (p.operStatus === 1)        return 'bg-green-500/80 hover:bg-green-400 text-white';
+        if (p.adminStatus !== 1)       return 'bg-gray-700 hover:bg-gray-600 text-gray-400';
+        return 'bg-gray-600/60 hover:bg-gray-500 text-gray-300';
+      },
+
+      portPoeDot(p) {
+        const poe = this.poePortData(p.index);
+        if (!poe) return '';
+        switch (poe.detectionStatus) {
+          case 'delivering': return 'bg-yellow-400';
+          case 'searching':  return 'bg-yellow-600';
+          case 'fault':
+          case 'otherFault': return 'bg-red-500';
+          default:           return '';   // disabled / unknown → no dot
+        }
+      },
+
+      portTooltip(p) {
+        const parts = [p.name];
+        if (p.alias) parts.push(p.alias);
+        if (p.combo) parts.push('combo');
+        parts.push(p.operStatus === 1 ? 'link up' : 'link down');
+        const poe = this.poePortData(p.index);
+        if (poe && poe.detectionStatus && poe.detectionStatus !== 'disabled') {
+          const w = poe.powerWatts ? ` · ${poe.powerWatts} W` : '';
+          parts.push(`PoE: ${poe.detectionStatus}${w}`);
+        }
+        return parts.join(' · ');
+      },
+
+      selectPort(idx) {
+        this.selectedPort = String(idx);
+        this.$nextTick(() => {
+          const row = document.querySelector(`[data-port-row="${idx}"]`);
+          if (row) row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+      },
+
+      get selectedPortInfo() {
+        if (!this.selectedPort) return null;
+        return (this.detail.ports || []).find(p => String(p.index) === this.selectedPort) || null;
+      },
+
+      // Effective tagged / untagged VLANs for a given port — respects pending
+      // changes so the columns track the staged state shown in the popup.
+      taggedVlansForPort(portIndex) {
+        return this.vlanList.filter(v => this.portVlanMode(portIndex, v.vid) === 'tagged');
+      },
+      untaggedVlanForPort(portIndex) {
+        return this.vlanList.find(v => this.portVlanMode(portIndex, v.vid) === 'untagged') || null;
+      },
+
+      poePortData(portIndex) {
+        const poe = this.detail.poe;
+        if (!poe?.ports) return null;
+        return poe.ports.find(p => p.portIndex === String(portIndex)) || null;
+      },
+
+      poeStatus(portIndex) {
+        const p = this.poePortData(portIndex);
+        return p ? p.detectionStatus : '—';
+      },
+
+      poeStatusColor(portIndex) {
+        const p = this.poePortData(portIndex);
+        if (!p) return 'text-gray-600';
+        return { delivering: 'text-green-400', disabled: 'text-gray-500', searching: 'text-yellow-400', fault: 'text-red-400' }[p.detectionStatus] || 'text-gray-400';
+      },
+
+      poeWatts(portIndex) {
+        const p = this.poePortData(portIndex);
+        return p?.powerWatts ?? null;
+      },
+
+      poeStatusColor2(status) {
+        return { delivering: 'text-green-400', disabled: 'text-gray-500', searching: 'text-yellow-400', fault: 'text-red-400', otherFault: 'text-red-400' }[status] || 'text-gray-400';
+      },
+
+      fmtBytes(n) {
+        if (!n) return '—';
+        if (n > 1e12) return (n/1e12).toFixed(1)+'T';
+        if (n > 1e9)  return (n/1e9).toFixed(1)+'G';
+        if (n > 1e6)  return (n/1e6).toFixed(1)+'M';
+        if (n > 1e3)  return (n/1e3).toFixed(1)+'K';
+        return n+'B';
+      },
+
+      // ── server helpers ────────────────────────────────────────────────────
+      healthColor(h) {
+        return { OK:'text-green-400', Good:'text-green-400', Normal:'text-green-400',
+                 Warning:'text-yellow-400', Critical:'text-red-400', operational:'text-green-400',
+                 on:'text-green-400', operable:'text-green-400' }[h] || 'text-gray-400';
+      },
+
+      statusKV(s) {
+        if (!s) return [];
+        const exclude = new Set(['online','sysDescr']);
+        return Object.entries(s).filter(([k,v]) => !exclude.has(k) && v != null && v !== '').map(([k,v]) => ({
+          k: k.replace(/([A-Z])/g, ' $1').replace(/^./, c => c.toUpperCase()),
+          v: String(v),
+        }));
+      },
+
+      cpuKV(cpu) {
+        const map = { model:'Model', vendor:'Vendor', cores:'Cores', threads:'Threads', speedMHz:'Speed', arch:'Architecture', stepping:'Stepping', totalCores:'Cores', totalThreads:'Threads', maxSpeedMHz:'Max Speed' };
+        return Object.entries(map).filter(([k]) => cpu[k] != null).map(([k,label]) => ({
+          k: label, v: k.includes('Speed') ? cpu[k] + ' MHz' : String(cpu[k]),
+        }));
+      },
+
+      memSize(m) {
+        const mb = parseInt(m.capacityMB || m.capacityMiB || m.capacity || 0);
+        if (!mb) return '—';
+        return mb >= 1024 ? (mb/1024).toFixed(0)+' GB' : mb+' MB';
+      },
+
+      diskSize(d) {
+        if (d.capacityGB) return d.capacityGB + ' GB';
+        const bytes = parseInt(d.capacityBytes || d.coercedSizeMB || 0);
+        if (!bytes) return '—';
+        if (d.coercedSizeMB) return (bytes/1024).toFixed(0)+' GB';
+        return (bytes/1e9).toFixed(0)+' GB';
+      },
+
+      relTime(iso) {
+        const diff = Date.now() - new Date(iso).getTime();
+        if (diff < 60000)  return 'just now';
+        if (diff < 3600000) return Math.floor(diff/60000)+'m ago';
+        return Math.floor(diff/3600000)+'h ago';
+      },
+    }
+  }
+  </script>
+</body>
+</html>
