@@ -1,47 +1,87 @@
-# HomeLab Manager
+<p align="center">
+  <img src="frontend/static/logo.png" alt="HomeLab Manager" width="120">
+</p>
 
-Single-process FastAPI app for managing homelab gear — switches (D-Link, generic SNMP), servers (Cisco CIMC, Dell iDRAC, HPE iLO, Huawei iBMC via Redfish), and anything else with an SNMP / SSH / Redfish / IPMI surface. JSON API + a static SPA in one binary.
+<h1 align="center">HomeLab Manager</h1>
 
-> **Homelab use only.** Device credentials are stored as plaintext JSON in the SQLite DB. Don't deploy this anywhere it can be reached by anyone you don't trust.
+<p align="center">
+  Single-process FastAPI app for managing homelab gear — switches (D-Link, generic SNMP), servers (Cisco CIMC, Dell iDRAC, HPE iLO, Huawei iBMC via Redfish), and anything else with an SNMP / SSH / Redfish / IPMI surface. JSON API + a static SPA in one binary.
+</p>
 
-## Run
+<p align="center">
+  <img src="https://img.shields.io/github/license/Spillebulle/homelab-manger?style=flat-square" alt="License">
+  <img src="https://img.shields.io/github/actions/workflow/status/Spillebulle/homelab-manger/docker.yml?style=flat-square&label=build" alt="Build">
+  <img src="https://img.shields.io/docker/pulls/spillebulle/homelab-manger?style=flat-square" alt="Docker pulls">
+</p>
 
-```powershell
-# Install
-pip install -r requirements.txt
+---
 
-# First start — sets initial admin password
-$env:ADMIN_PASSWORD = "pick-something"
-$env:DB_PATH = "$PWD\homelab.db"   # default is /data/homelab.db (Linux/container)
-uvicorn backend.main:app --reload --host 0.0.0.0 --port 8080
-```
+## Screenshots
 
-Then open http://localhost:8080. Default username is `admin`. If you didn't set `ADMIN_PASSWORD` before the very first start, the password is `changeme` — change it from the sidebar key icon.
+### Dashboard
+![Dashboard](docs/Dashboard.png)
 
-## Container
+### Switch — port view
+![Switch ports](docs/Ports-switch.png)
 
-Pre-built images are published on every push to `main`:
+### Server detail
+![Server](docs/Server.png)
 
-- `ghcr.io/spillebulle/homelab-manger:latest`
-- `docker.io/spillebulle/homelab-manger:latest` *(same image)*
+---
 
-Both expose `linux/amd64` and `linux/arm64`. Run:
+> **Homelab use only.** Device credentials are stored as plaintext JSON in the SQLite DB. Don't deploy this anywhere reachable by anyone you don't trust.
+
+## Install
+
+The recommended way is the pre-built container — it includes every Python dependency, runs on amd64 *and* arm64, and is rebuilt on every push to `main`.
+
+### Option 1 — GitHub Container Registry (GHCR)
 
 ```bash
-docker run -d -p 8080:8080 \
+docker run -d --name homelab-manager \
+  -p 8080:8080 \
   -e ADMIN_PASSWORD=pick-something \
   -v homelab-data:/data \
   ghcr.io/spillebulle/homelab-manger:latest
 ```
 
-Or build locally:
+### Option 2 — Docker Hub
 
 ```bash
-docker build -t homelab-manger .
-docker run -d -p 8080:8080 -e ADMIN_PASSWORD=pick-something -v homelab-data:/data homelab-manger
+docker run -d --name homelab-manager \
+  -p 8080:8080 \
+  -e ADMIN_PASSWORD=pick-something \
+  -v homelab-data:/data \
+  spillebulle/homelab-manger:latest
 ```
 
-The `/data` volume holds the SQLite DB and the session-cookie secret, so restarts don't log you out and don't reset the admin password.
+> Both registries serve the same image. Pin a version (e.g. `:v0.1.0`) in production instead of `:latest`.
+
+### Option 3 — Build the image locally
+
+```bash
+git clone https://github.com/Spillebulle/homelab-manger.git
+cd homelab-manger
+docker build -t homelab-manger .
+docker run -d --name homelab-manager \
+  -p 8080:8080 -e ADMIN_PASSWORD=pick-something -v homelab-data:/data \
+  homelab-manger
+```
+
+### Option 4 — Run from source (no Docker)
+
+```powershell
+pip install -r requirements.txt
+$env:ADMIN_PASSWORD = "pick-something"
+$env:DB_PATH = "$PWD\homelab.db"   # default is /data/homelab.db on Linux
+uvicorn backend.main:app --reload --host 0.0.0.0 --port 8080
+```
+
+### First sign-in
+
+Open <http://localhost:8080>. Username is `admin`. The password is whatever you set in `ADMIN_PASSWORD` on first start; if you didn't set it, the default is `changeme` and the app logs a warning. Change it from the key icon in the sidebar.
+
+The `/data` volume holds the SQLite database and the session-cookie secret — keep it across restarts so users stay logged in and the admin password isn't reset.
 
 ## Configuration
 
@@ -64,6 +104,8 @@ $env:ADMIN_PASSWORD = "new-password"
 # Start the app — it'll re-bootstrap the admin user.
 ```
 
+If you're running in Docker, attach to the volume and delete the row from the SQLite file the same way (or just remove the volume to start fresh).
+
 ## Project layout
 
 ```
@@ -76,9 +118,8 @@ backend/
 frontend/
   index.html       SPA (Tailwind + Alpine.js, no build step)
   login.html       Standalone login page
+  static/          Logo + any other public static assets
 ```
-
-See `CLAUDE.md` for the architectural deep-dive, vendor quirks (especially D-Link DGS-3120 and Cisco CIMC 2.0(9f)), and the things-that-look-wrong-but-aren't catalog.
 
 ## License
 

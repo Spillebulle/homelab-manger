@@ -64,6 +64,16 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Sync README to Docker Hub
+        if: github.ref == 'refs/heads/main'
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ secrets.DOCKERHUB_USERNAME }}/homelab-manger
+          short-description: "FastAPI app for managing homelab gear — switches, servers, BMCs"
+          enable-url-completion: true
+
   release:
     # Only runs when a v* tag is pushed, after the image has been published.
     if: startsWith(github.ref, 'refs/tags/v')
