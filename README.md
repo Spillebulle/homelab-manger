@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="frontend/static/logo.png" alt="HomeLab Manager" width="120">
+  <img src="https://raw.githubusercontent.com/Spillebulle/homelab-manger/main/frontend/static/logo.png" alt="HomeLab Manager" width="120">
 </p>
 
 <h1 align="center">HomeLab Manager</h1>
@@ -19,13 +19,13 @@
 ## Screenshots
 
 ### Dashboard
-![Dashboard](docs/Dashboard.png)
+![Dashboard](https://raw.githubusercontent.com/Spillebulle/homelab-manger/main/docs/Dashboard.png)
 
 ### Switch — port view
-![Switch ports](docs/Ports-switch.png)
+![Switch ports](https://raw.githubusercontent.com/Spillebulle/homelab-manger/main/docs/Ports-switch.png)
 
 ### Server detail
-![Server](docs/Server.png)
+![Server](https://raw.githubusercontent.com/Spillebulle/homelab-manger/main/docs/Server.png)
 
 ---
 
