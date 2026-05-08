@@ -668,27 +668,33 @@
 
                 <!-- PCIe -->
                 <template x-if="hwTab === 'pcie'">
-                  <div class="overflow-x-auto">
-                    <table class="w-full text-sm">
-                      <thead>
-                        <tr class="text-xs text-gray-500 uppercase tracking-wide border-b border-border">
-                          <th class="text-left pb-2 pr-4">Slot</th>
-                          <th class="text-left pb-2 pr-4">Model</th>
-                          <th class="text-left pb-2 pr-4">Vendor</th>
-                          <th class="text-left pb-2">Class</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <template x-for="(p, i) in detail.hardware?.pcie ?? []" :key="i">
-                          <tr class="border-b border-border/50">
-                            <td class="py-2 pr-4 text-gray-400 font-mono text-xs" x-text="p.id"></td>
-                            <td class="py-2 pr-4 text-white" x-text="p.model || '—'"></td>
-                            <td class="py-2 pr-4 text-gray-400" x-text="p.vendor || p.manufacturer || '—'"></td>
-                            <td class="py-2 text-gray-500 text-xs" x-text="p.class || p.pciClass || '—'"></td>
+                  <div>
+                    <div class="overflow-x-auto">
+                      <table class="w-full text-sm">
+                        <thead>
+                          <tr class="text-xs text-gray-500 uppercase tracking-wide border-b border-border">
+                            <th class="text-left pb-2 pr-4">Slot</th>
+                            <th class="text-left pb-2 pr-4">Model</th>
+                            <th class="text-left pb-2 pr-4">Vendor</th>
+                            <th class="text-left pb-2">Class</th>
                           </tr>
-                        </template>
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody>
+                          <template x-for="(p, i) in detail.hardware?.pcie ?? []" :key="i">
+                            <tr class="border-b border-border/50">
+                              <td class="py-2 pr-4 text-gray-400 font-mono text-xs" x-text="p.id"></td>
+                              <td class="py-2 pr-4 text-white" x-text="p.model || '—'"></td>
+                              <td class="py-2 pr-4 text-gray-400" x-text="p.vendor || p.manufacturer || '—'"></td>
+                              <td class="py-2 text-gray-500 text-xs" x-text="p.class || p.pciClass || '—'"></td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                    <p x-show="selectedDevice?.adapter_type === 'ibmc'"
+                       class="text-xs text-gray-500 mt-3 max-w-2xl">
+                      iBMC reports Huawei-branded PCIe cards only. Third-party NICs, HBAs, or accelerators (Intel, Mellanox, Broadcom, etc.) won't appear here — the BMC firmware doesn't introspect them.
+                    </p>
                   </div>
                 </template>
               </div>
