@@ -337,21 +337,34 @@ class CIMCAdapter(BaseAdapter):
             self._resolve_class("storageController"),
         )
 
+        # CIMC's `storageLocalDisk` uses non-obvious field names: the disk
+        # model is `productId`, the serial is `driveSerialNumber`, firmware is
+        # `driveFirmware`, state is `driveState`/`pdStatus`. Coerced/raw sizes
+        # come back as strings with a unit suffix ("285148 MB"); we strip the
+        # unit and return the integer MB count.
+        def _size_mb(value):
+            if not value:
+                return None
+            try:
+                return int(str(value).split()[0])
+            except (ValueError, IndexError):
+                return None
+
         disks = [
             {
                 "id":            r.get("id"),
                 "dn":            r.get("dn"),
-                "model":         r.get("model"),
+                "model":         r.get("productId") or r.get("model"),
                 "vendor":        r.get("vendor"),
-                "serial":        r.get("serialNumber"),
-                "coercedSizeMB": r.get("coercedSizeBytes"),
-                "rawSizeMB":     r.get("rawSize"),
+                "serial":        r.get("driveSerialNumber") or r.get("serialNumber"),
+                "coercedSizeMB": _size_mb(r.get("coercedSize")),
+                "rawSizeMB":     _size_mb(r.get("rawSize")),
                 "mediaType":     r.get("mediaType"),      # HDD / SSD
                 "interface":     r.get("interfaceType"),  # SAS / SATA
-                "state":         r.get("diskState"),
+                "state":         r.get("driveState") or r.get("pdStatus"),
                 "health":        r.get("health"),
                 "linkSpeed":     r.get("linkSpeed"),
-                "firmware":      r.get("firmware"),
+                "firmware":      r.get("driveFirmware") or r.get("firmware"),
             }
             for r in disk_rows
         ]
