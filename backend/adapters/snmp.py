@@ -2,6 +2,7 @@
 Generic SNMP adapter using puresnmp (pure Python, no C deps, no version chaos).
 """
 import asyncio
+from datetime import timedelta
 from typing import Any
 from .base import BaseAdapter
 from .oui import lookup as oui_lookup
@@ -37,6 +38,18 @@ _BRIDGE_PORT_TO_IF = "1.3.6.1.2.1.17.1.4.1.2"  # dot1dBasePortIfIndex
 _ARP_MODERN  = "1.3.6.1.2.1.4.35.1.4"   # ipNetToPhysicalPhysAddress (mac value, IP in OID)
 _ARP_LEGACY  = "1.3.6.1.2.1.4.22.1.2"   # ipNetToMediaPhysAddress
 _OWN_IP_TBL  = "1.3.6.1.2.1.4.20.1.1"   # ipAdEntAddr (this device's L3 addresses)
+_IP_NETMASK  = "1.3.6.1.2.1.4.20.1.3"   # ipAdEntNetMask (sibling column to ipAdEntAddr)
+_IP_ORIGIN   = "1.3.6.1.2.1.4.34.1.6"   # ipAddressOrigin (1=other 2=manual 4=dhcp 5=link 6=random)
+_ROUTE_NEXTHOP = "1.3.6.1.2.1.4.21.1.7" # ipRouteNextHop (legacy table; default route's row indexed by .0.0.0.0)
+
+# Entity MIB — physical inventory (firmware, serial, model)
+_ENT_SOFT_REV = "1.3.6.1.2.1.47.1.1.1.1.10"  # entPhysicalSoftwareRev
+_ENT_SERIAL   = "1.3.6.1.2.1.47.1.1.1.1.11"  # entPhysicalSerialNum
+
+# BRIDGE-MIB — chassis MAC (the address used by the management UI)
+_BRIDGE_BASE_MAC = "1.3.6.1.2.1.17.1.1.0"
+
+_IP_ORIGIN_NAMES = {1: "other", 2: "manual", 4: "dhcp", 5: "linklayer", 6: "random"}
 
 _POE_DETECTION_NAMES = {
     1: "disabled", 2: "searching", 3: "delivering",
@@ -135,6 +148,42 @@ def _ip_from_oid_tail(oid: str) -> str | None:
     return ".".join(str(o) for o in octets)
 
 
+def _bytes_to_ip(value) -> str | None:
+    """Convert a 4-byte SNMP IpAddress value (or already-stringified IP) to
+    dotted-decimal."""
+    if isinstance(value, bytes) and len(value) == 4:
+        return ".".join(str(b) for b in value)
+    if isinstance(value, str):
+        # Already dotted-decimal? Validate loosely and pass through.
+        parts = value.split(".")
+        if len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+            return value
+    return None
+
+
+def _format_uptime(value) -> str | None:
+    """sysUpTime comes back as a Python timedelta from puresnmp (TimeTicks
+    decoded). Drop sub-second precision so the UI doesn't show '0:01:23.456'."""
+    if value is None:
+        return None
+    if isinstance(value, timedelta):
+        return str(timedelta(seconds=int(value.total_seconds())))
+    return _to_str(value)
+
+
+def _first_nonempty(walk_result) -> str | None:
+    """Pick the first non-empty string value from a walk (Entity MIB rows are
+    repeated per slot/module/PSU; we just want the chassis row, which is the
+    first one with content)."""
+    if not walk_result:
+        return None
+    for _oid, v in walk_result:
+        s = _to_str(v).strip() if v is not None else ""
+        if s:
+            return s
+    return None
+
+
 class SNMPAdapter(BaseAdapter):
     def __init__(self, hostname: str, credentials: dict):
         super().__init__(hostname, credentials)
@@ -153,16 +202,82 @@ class SNMPAdapter(BaseAdapter):
         raise ValueError(f"Unknown cache key: {cache_key!r}")
 
     async def _status(self) -> dict:
-        name, descr, uptime = await asyncio.gather(
-            _get(self.hostname, self.community, _SYS_NAME,   self.port),
-            _get(self.hostname, self.community, _SYS_DESCR,  self.port),
-            _get(self.hostname, self.community, _SYS_UPTIME, self.port),
+        # All probes in parallel — single round-trip latency for the whole set.
+        # Devices that don't expose a given table just return [] / None and
+        # the corresponding field stays null in the response.
+        results = await asyncio.gather(
+            _get(self.hostname,  self.community, _SYS_NAME,         self.port),
+            _get(self.hostname,  self.community, _SYS_DESCR,        self.port),
+            _get(self.hostname,  self.community, _SYS_UPTIME,       self.port),
+            _get(self.hostname,  self.community, _BRIDGE_BASE_MAC,  self.port),
+            _walk(self.hostname, self.community, _OWN_IP_TBL,       self.port),
+            _walk(self.hostname, self.community, _IP_NETMASK,       self.port),
+            _walk(self.hostname, self.community, _IP_ORIGIN,        self.port),
+            _walk(self.hostname, self.community, _ROUTE_NEXTHOP,    self.port),
+            _walk(self.hostname, self.community, _ENT_SOFT_REV,     self.port),
+            _walk(self.hostname, self.community, _ENT_SERIAL,       self.port),
+            return_exceptions=True,
         )
+
+        def _ok(v):
+            return None if isinstance(v, Exception) else v
+
+        name, descr, uptime, base_mac = (_ok(r) for r in results[:4])
+        ipaddr_w, mask_w, origin_w, route_w, fw_w, sn_w = (
+            _ok(r) or [] for r in results[4:]
+        )
+
+        # Pick the first non-loopback IP from ipAdEntAddr; the OID tail is the
+        # IP itself, which makes joining to netmask and origin trivial.
+        ip_address: str | None = None
+        ip_tail: str | None = None
+        for oid, v in ipaddr_w:
+            ip = _bytes_to_ip(v)
+            if ip and not ip.startswith("127."):
+                ip_address = ip
+                ip_tail = oid[len(_OWN_IP_TBL) + 1:]
+                break
+
+        subnet_mask: str | None = None
+        if ip_tail:
+            for oid, v in mask_w:
+                if oid.endswith("." + ip_tail):
+                    subnet_mask = _bytes_to_ip(v)
+                    break
+
+        # ipAddressOrigin is keyed by `<addr-type>.<addr-len>.<ip-bytes>`; we
+        # can't trivially match by tail, so just take the first row that maps
+        # to our IP. On switches with one mgmt IP there's only one row anyway.
+        ip_origin: str | None = None
+        for oid, v in origin_w:
+            if ip_address and oid.endswith("." + ip_address):
+                ip_origin = _IP_ORIGIN_NAMES.get(_safe_int(v), str(_safe_int(v)))
+                break
+        if ip_origin is None and origin_w:
+            # Fallback: take the first row even without an IP match.
+            ip_origin = _IP_ORIGIN_NAMES.get(_safe_int(origin_w[0][1]), None)
+
+        # Default-route gateway: ipRouteNextHop indexed by .0.0.0.0 destination.
+        gateway: str | None = None
+        for oid, v in route_w:
+            if oid.endswith(".0.0.0.0"):
+                gw = _bytes_to_ip(v)
+                if gw and gw != "0.0.0.0":
+                    gateway = gw
+                    break
+
         return {
-            "online":    name is not None,
-            "sysName":   _to_str(name)   if name   is not None else None,
-            "sysDescr":  _to_str(descr)  if descr  is not None else None,
-            "sysUptime": _to_str(uptime) if uptime is not None else None,
+            "online":     name is not None,
+            "sysName":    _to_str(name)  if name  is not None else None,
+            "sysDescr":   _to_str(descr) if descr is not None else None,
+            "sysUptime":  _format_uptime(uptime),
+            "ipAddress":  ip_address,
+            "subnetMask": subnet_mask,
+            "gateway":    gateway,
+            "ipOrigin":   ip_origin,
+            "mac":        _fmt_mac(base_mac),
+            "firmware":   _first_nonempty(fw_w),
+            "serial":     _first_nonempty(sn_w),
         }
 
     async def _ports(self) -> list[dict]:

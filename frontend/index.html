@@ -1953,9 +1953,36 @@
       statusKV(s) {
         if (!s) return [];
         const exclude = new Set(['online','sysDescr']);
-        return Object.entries(s).filter(([k,v]) => !exclude.has(k) && v != null && v !== '').map(([k,v]) => ({
-          k: k.replace(/([A-Z])/g, ' $1').replace(/^./, c => c.toUpperCase()),
-          v: String(v),
+        // Friendly labels for known keys; anything else falls through to the
+        // generic "camelCase → Title Case" transform.
+        const labels = {
+          sysName:    'Hostname',
+          sysUptime:  'Uptime',
+          ipAddress:  'IP Address',
+          subnetMask: 'Subnet Mask',
+          gateway:    'Gateway',
+          ipOrigin:   'DHCP',
+          mac:        'MAC',
+          firmware:   'Firmware',
+          serial:     'Serial Number',
+        };
+        const formatters = {
+          ipOrigin: v => v === 'dhcp' ? 'Enabled' : v === 'manual' ? 'Disabled (static)' : v,
+          mac: v => String(v).toUpperCase(),
+        };
+        // Display order: identity → uptime → network → hardware identity.
+        const order = ['sysName','sysUptime','ipAddress','subnetMask','gateway','ipOrigin','mac','firmware','serial'];
+        const entries = Object.entries(s).filter(([k,v]) => !exclude.has(k) && v != null && v !== '');
+        entries.sort(([a],[b]) => {
+          const ai = order.indexOf(a), bi = order.indexOf(b);
+          if (ai === -1 && bi === -1) return 0;
+          if (ai === -1) return 1;
+          if (bi === -1) return -1;
+          return ai - bi;
+        });
+        return entries.map(([k,v]) => ({
+          k: labels[k] || k.replace(/([A-Z])/g, ' $1').replace(/^./, c => c.toUpperCase()),
+          v: formatters[k] ? formatters[k](v) : String(v),
         }));
       },
 
