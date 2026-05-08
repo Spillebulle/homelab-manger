@@ -24,6 +24,11 @@ _PORT_NAME_RE         = re.compile(r"^Port\s+(\d+)$")
 # DGS-3120 ifDescr format: "D-Link DGS-3120-48PC R4.00.015 Port 1 on Unit 1"
 _IFDESCR_PORT_RE      = re.compile(r"\bPort\s+(\d+)\b(?:\s+on\s+Unit\s+(\d+))?")
 
+# DGS-3120 firmware lies about ipAddressOrigin via SNMP — it always returns 2
+# (manual) regardless of how the address was actually acquired. The CLI's
+# `show ipif` output ("IPv4 Address: 192.168.0.16/24 (DHCP)") is authoritative.
+_IPIF_DHCP_RE = re.compile(r"IPv4\s+Address\s*:\s*\S+\s*\((DHCP|Manual)\)", re.IGNORECASE)
+
 # DGS-3120 `show poe ports` output is 3 lines per port:
 #   1:5    Enabled   Low       15400(Class 0)
 #          2         1700      535                 33
@@ -69,6 +74,23 @@ class DLinkAdapter(SNMPAdapter):
         if cache_key == "vlans":
             return await self._vlans()
         return await super().fetch(cache_key)
+
+    async def _status(self) -> dict:
+        base = await super()._status()
+        # Override SNMP-derived ipOrigin via CLI — this firmware reports the
+        # SNMP field as "manual" even for DHCP-acquired addresses. CLI is
+        # authoritative. Best-effort: any SSH failure leaves the SNMP value.
+        if not base.get("online"):
+            return base
+        try:
+            result = await self._cli("show ipif")
+        except Exception:
+            return base
+        if result.get("ok"):
+            m = _IPIF_DHCP_RE.search(result.get("output", ""))
+            if m:
+                base["ipOrigin"] = m.group(1).lower()  # "dhcp" or "manual"
+        return base
 
     async def _ports(self) -> list[dict]:
         ports = await super()._ports()
