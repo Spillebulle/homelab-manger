@@ -1195,9 +1195,9 @@
   </div>
 
   <!-- ── Port VLAN-membership popup ────────────────────────────────────────── -->
-  <div x-show="selectedPort && vlanList.length && isSwitch" x-transition.opacity
+  <div x-show="selectedPort && vlanList.length && isSwitch && tab === 'ports'" x-transition.opacity
        @click.self="selectedPort = null"
-       @keydown.escape.window="selectedPort && (selectedPort = null)"
+       @keydown.escape.window="selectedPort && tab === 'ports' && (selectedPort = null)"
        class="fixed inset-0 bg-black/40 z-40 flex items-center justify-center p-4">
     <div class="bg-card border border-border rounded-lg p-5 w-full max-w-2xl shadow-2xl">
       <div class="flex items-start justify-between mb-3">
