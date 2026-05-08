@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 
+from . import __version__ as APP_VERSION
 from .database import get_db, init_db
 from .models import Device, DeviceCache, AuthUser
 from .schemas import DeviceCreate, DeviceUpdate, LoginRequest, ChangePasswordRequest
@@ -109,6 +110,17 @@ auth_router = APIRouter(prefix="/api/auth", tags=["auth"])
 def whoami(request: Request):
     user = request.session.get(SESSION_USER_KEY)
     return {"authenticated": bool(user), "username": user}
+
+
+# Unauthenticated on purpose: the version string isn't sensitive and the login
+# page should be able to show it too without round-tripping a session.
+@app.get("/api/version")
+def app_version():
+    return {
+        "version": APP_VERSION,
+        "github_url": "https://github.com/Spillebulle/homelab-manger",
+        "dockerhub_url": "https://hub.docker.com/r/spillebulle/homelab-manger",
+    }
 
 
 @auth_router.post("/login")

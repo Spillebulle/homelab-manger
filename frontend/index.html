@@ -33,6 +33,19 @@
 </head>
 <body class="bg-surface text-gray-200 h-screen overflow-hidden" x-data="homelab()" x-init="init()" x-cloak>
 
+  <!-- ── Top-right info widget ──────────────────────────────────────────── -->
+  <div class="fixed top-2 right-3 z-30 flex items-center gap-3 text-xs text-gray-400 bg-panel/80 backdrop-blur-sm border border-border rounded px-2.5 py-1">
+    <span x-text="'v' + (appInfo.version || '?')"></span>
+    <a :href="appInfo.github_url || '#'" target="_blank" rel="noopener"
+       class="hover:text-white transition-colors" title="GitHub">
+      <i class="fa-brands fa-github"></i>
+    </a>
+    <a :href="appInfo.dockerhub_url || '#'" target="_blank" rel="noopener"
+       class="hover:text-white transition-colors" title="Docker Hub">
+      <i class="fa-brands fa-docker"></i>
+    </a>
+  </div>
+
   <!-- ── Layout ─────────────────────────────────────────────────────────── -->
   <div class="flex h-screen">
 
@@ -1222,6 +1235,7 @@
       confirmModal:    { show: false, message: '', fn: null },
       passwordModal:   { show: false, current: '', next: '', confirm: '', error: '', busy: false },
       username:        '',
+      appInfo:         { version: '', github_url: '', dockerhub_url: '' },
       form: {},
 
       // ── lifecycle ────────────────────────────────────────────────────────
@@ -1237,9 +1251,17 @@
           return r;
         };
         await this.loadIdentity();
+        this.loadAppInfo();
         await this.loadDevices();
         this.connectWebSocket();
         if (this.selectedId) await this.loadDetail(this.selectedId);
+      },
+
+      async loadAppInfo() {
+        try {
+          const r = await fetch('/api/version');
+          if (r.ok) this.appInfo = await r.json();
+        } catch (e) { /* widget shows '?' */ }
       },
 
       async loadIdentity() {
