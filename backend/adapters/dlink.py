@@ -63,7 +63,7 @@ def _read_quiet(channel, quiet_ms: int = 600, timeout: int = 10) -> str:
 class DLinkAdapter(SNMPAdapter):
 
     def get_supported_cache_keys(self) -> list[str]:
-        return ["status", "ports", "poe", "vlans"]
+        return ["status", "ports", "poe", "vlans", "connected"]
 
     async def fetch(self, cache_key: str) -> Any:
         if cache_key == "vlans":

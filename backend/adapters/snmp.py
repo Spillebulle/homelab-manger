@@ -4,6 +4,7 @@ Generic SNMP adapter using puresnmp (pure Python, no C deps, no version chaos).
 import asyncio
 from typing import Any
 from .base import BaseAdapter
+from .oui import lookup as oui_lookup
 
 # IF-MIB
 _IF_DESCR        = "1.3.6.1.2.1.2.2.1.2"
@@ -26,6 +27,16 @@ _POE_CONSUMPTION    = "1.3.6.1.2.1.105.1.3.1.4"
 _SYS_NAME   = "1.3.6.1.2.1.1.5.0"
 _SYS_DESCR  = "1.3.6.1.2.1.1.1.0"
 _SYS_UPTIME = "1.3.6.1.2.1.1.3.0"
+
+# BRIDGE-MIB (FDB / forwarding table)
+_FDB_ADDR    = "1.3.6.1.2.1.17.4.3.1.1"  # dot1dTpFdbAddress (MAC)
+_FDB_PORT    = "1.3.6.1.2.1.17.4.3.1.2"  # dot1dTpFdbPort   (bridge-port)
+_BRIDGE_PORT_TO_IF = "1.3.6.1.2.1.17.1.4.1.2"  # dot1dBasePortIfIndex
+
+# IP-MIB ARP — modern (RFC 4293) and legacy (RFC 1213) tables
+_ARP_MODERN  = "1.3.6.1.2.1.4.35.1.4"   # ipNetToPhysicalPhysAddress (mac value, IP in OID)
+_ARP_LEGACY  = "1.3.6.1.2.1.4.22.1.2"   # ipNetToMediaPhysAddress
+_OWN_IP_TBL  = "1.3.6.1.2.1.4.20.1.1"   # ipAdEntAddr (this device's L3 addresses)
 
 _POE_DETECTION_NAMES = {
     1: "disabled", 2: "searching", 3: "delivering",
@@ -99,6 +110,31 @@ def _safe_int(v, default: int = 0) -> int:
         return default
 
 
+def _fmt_mac(value) -> str | None:
+    """Format a 6-byte SNMP value (bytes or ASCII-hex) as 'aa:bb:cc:dd:ee:ff'."""
+    if isinstance(value, bytes) and len(value) == 6:
+        return ":".join(f"{b:02x}" for b in value)
+    if isinstance(value, str) and len(value) == 17 and value.count(":") == 5:
+        return value.lower()
+    return None
+
+
+def _ip_from_oid_tail(oid: str) -> str | None:
+    """Extract a dotted-decimal IPv4 from the last 4 numeric segments of an OID.
+    Both ipNetToMediaTable and ipNetToPhysicalTable encode the IP as the final
+    4 sub-IDs of the index. Returns None if no plausible IPv4 is found."""
+    parts = str(oid).split(".")
+    if len(parts) < 4:
+        return None
+    try:
+        octets = [int(p) for p in parts[-4:]]
+    except ValueError:
+        return None
+    if any(o < 0 or o > 255 for o in octets):
+        return None
+    return ".".join(str(o) for o in octets)
+
+
 class SNMPAdapter(BaseAdapter):
     def __init__(self, hostname: str, credentials: dict):
         super().__init__(hostname, credentials)
@@ -107,12 +143,13 @@ class SNMPAdapter(BaseAdapter):
         self.port            = int(credentials.get("port", 161))
 
     def get_supported_cache_keys(self) -> list[str]:
-        return ["status", "ports", "poe"]
+        return ["status", "ports", "poe", "connected"]
 
     async def fetch(self, cache_key: str) -> Any:
-        if cache_key == "status": return await self._status()
-        if cache_key == "ports":  return await self._ports()
-        if cache_key == "poe":    return await self._poe()
+        if cache_key == "status":    return await self._status()
+        if cache_key == "ports":     return await self._ports()
+        if cache_key == "poe":       return await self._poe()
+        if cache_key == "connected": return await self._connected()
         raise ValueError(f"Unknown cache key: {cache_key!r}")
 
     async def _status(self) -> dict:
@@ -213,6 +250,75 @@ class SNMPAdapter(BaseAdapter):
             "totalPowerWatts":  main_watts[0] if main_watts else None,
             "consumptionWatts": cons_watts[0] if cons_watts else None,
         }
+
+    async def _connected(self) -> list[dict]:
+        """Return MAC table joined with bridge-port→ifIndex and (where the
+        switch knows it) ARP-derived IP. Devices that haven't talked to the
+        switch's L3 plane will have ip=None — that's not a bug, the switch
+        genuinely doesn't know.
+        """
+        fdb_addr_w, fdb_port_w, b2i_w, arp_mod_w, arp_leg_w, own_w = await asyncio.gather(
+            _walk(self.hostname, self.community, _FDB_ADDR,           self.port),
+            _walk(self.hostname, self.community, _FDB_PORT,           self.port),
+            _walk(self.hostname, self.community, _BRIDGE_PORT_TO_IF,  self.port),
+            _walk(self.hostname, self.community, _ARP_MODERN,         self.port),
+            _walk(self.hostname, self.community, _ARP_LEGACY,         self.port),
+            _walk(self.hostname, self.community, _OWN_IP_TBL,         self.port),
+            return_exceptions=True,
+        )
+
+        def _safe(walk):
+            return [] if isinstance(walk, Exception) else (walk or [])
+
+        # bridge-port → ifIndex (e.g. {"1": 1, "2": 2, ...})
+        b2i = {oid.rsplit(".", 1)[-1]: str(_safe_int(v)) for oid, v in _safe(b2i_w)}
+
+        # Build MAC table: the OID tail after _FDB_ADDR is shared between the
+        # address and port walks, so we can join by it.
+        addr_by_tail = {oid[len(_FDB_ADDR) + 1:]: v for oid, v in _safe(fdb_addr_w)}
+        port_by_tail = {oid[len(_FDB_PORT) + 1:]: v for oid, v in _safe(fdb_port_w)}
+
+        # ARP joins. Modern table is preferred — its key already contains the
+        # IP as dotted decimal (e.g. ".5121.1.4.192.168.0.1"); the trailing 4
+        # octets are the IP. Legacy table encodes the IP the same way.
+        mac_to_ip: dict[str, str] = {}
+        for oid, v in _safe(arp_mod_w):
+            mac = _fmt_mac(v)
+            ip = _ip_from_oid_tail(oid)
+            if mac and ip:
+                mac_to_ip.setdefault(mac, ip)
+        if not mac_to_ip:
+            for oid, v in _safe(arp_leg_w):
+                mac = _fmt_mac(v)
+                ip = _ip_from_oid_tail(oid)
+                if mac and ip:
+                    mac_to_ip.setdefault(mac, ip)
+
+        own_ips = {_ip_from_oid_tail(oid) for oid, _ in _safe(own_w)}
+        own_ips.discard(None)
+
+        result = []
+        for tail, mac_bytes in addr_by_tail.items():
+            mac = _fmt_mac(mac_bytes)
+            if not mac:
+                continue
+            bridge_port = str(_safe_int(port_by_tail.get(tail), 0))
+            # Bridge-port 0 = the switch's own CPU; not a real edge port.
+            if bridge_port == "0":
+                continue
+            if_index = b2i.get(bridge_port, bridge_port)  # fall back to bridge-port if no mapping
+            ip = mac_to_ip.get(mac)
+            result.append({
+                "mac":      mac,
+                "port_id":  if_index,
+                "vendor":   oui_lookup(mac),
+                "ip":       ip,
+                "is_self":  bool(ip and ip in own_ips),
+            })
+
+        # Stable sort: numeric port asc, then MAC.
+        result.sort(key=lambda r: (_safe_int(r["port_id"], 9999), r["mac"]))
+        return result
 
     async def execute_action(self, action: dict) -> dict:
         atype = action.get("type")

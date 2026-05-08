@@ -286,6 +286,7 @@
                         <th class="text-left pb-2 pr-4">Tagged</th>
                         <th class="text-left pb-2 pr-4">Admin</th>
                         <th class="text-left pb-2 pr-4">Link</th>
+                        <th class="text-left pb-2 pr-4">Connected</th>
                         <th class="text-right pb-2 pr-4">Speed</th>
                         <th class="text-right pb-2 pr-4">RX</th>
                         <th class="text-right pb-2 pr-4">TX</th>
@@ -342,6 +343,17 @@
                             <span :class="p.operStatus === 1 ? 'text-green-400' : 'text-gray-500'"
                                   x-text="p.operStatus === 1 ? 'Up' : 'Down'"></span>
                           </td>
+                          <td class="py-2 pr-4">
+                            <template x-if="connectedSummary(p.index)">
+                              <button @click.stop="tab = 'connected'; selectedPort = String(p.index)"
+                                      class="text-xs text-blue-300 hover:text-blue-200 hover:underline truncate max-w-[140px] inline-block text-left"
+                                      :title="connectedForPort(p.index).map(c => `${c.mac}${c.ip ? ' · ' + c.ip : ''}${c.vendor ? ' · ' + c.vendor : ''}`).join('\n')"
+                                      x-text="connectedSummary(p.index)"></button>
+                            </template>
+                            <template x-if="!connectedSummary(p.index)">
+                              <span class="text-gray-600 text-xs">—</span>
+                            </template>
+                          </td>
                           <td class="py-2 pr-4 text-right text-gray-400" x-text="p.speedMbps ? p.speedMbps + 'M' : '—'"></td>
                           <td class="py-2 pr-4 text-right text-gray-400 font-mono text-xs" x-text="fmtBytes(p.inOctets)"></td>
                           <td class="py-2 pr-4 text-right text-gray-400 font-mono text-xs" x-text="fmtBytes(p.outOctets)"></td>
@@ -369,11 +381,63 @@
                         </tr>
                       </template>
                       <tr x-show="filteredPorts.length === 0">
-                        <td colspan="12" class="py-8 text-center text-gray-500">No ports match filter.</td>
+                        <td colspan="13" class="py-8 text-center text-gray-500">No ports match filter.</td>
                       </tr>
                     </tbody>
                   </table>
                 </div>
+              </div>
+            </template>
+
+            <!-- ── Connected devices ── -->
+            <template x-if="tab === 'connected'">
+              <div>
+                <div class="flex items-center justify-between mb-4">
+                  <div class="text-sm text-gray-400">
+                    <span x-text="(detail.connected || []).length + ' MAC addresses learned'"></span>
+                    <span x-show="detail.connected_error" class="text-red-400 ml-2" x-text="'· ' + detail.connected_error"></span>
+                  </div>
+                  <input x-model="connectedFilter" placeholder="Filter…"
+                         class="bg-card border border-border rounded px-3 py-1.5 text-sm text-gray-200 placeholder-gray-500 w-48 focus:outline-none focus:border-blue-500">
+                </div>
+
+                <div class="overflow-x-auto">
+                  <table class="w-full text-sm">
+                    <thead>
+                      <tr class="text-xs text-gray-500 uppercase tracking-wide border-b border-border">
+                        <th class="text-left pb-2 pr-4">Port</th>
+                        <th class="text-left pb-2 pr-4">MAC</th>
+                        <th class="text-left pb-2 pr-4">Vendor</th>
+                        <th class="text-left pb-2 pr-4">IP</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <template x-for="c in filteredConnected" :key="c.mac + '@' + c.port_id">
+                        <tr :class="selectedPort === String(c.port_id) ? 'bg-blue-500/15 ring-1 ring-blue-500/40' : 'hover:bg-card/50'"
+                            class="border-b border-border/50">
+                          <td class="py-2 pr-4">
+                            <button @click="tab = 'ports'; selectPort(c.port_id)"
+                                    class="font-mono text-xs text-blue-300 hover:text-blue-200 hover:underline"
+                                    x-text="c.port_id"></button>
+                          </td>
+                          <td class="py-2 pr-4 font-mono text-xs text-gray-300" x-text="c.mac"></td>
+                          <td class="py-2 pr-4 text-gray-400" x-text="c.vendor || '—'"></td>
+                          <td class="py-2 pr-4 font-mono text-xs text-gray-400" x-text="c.ip || '—'"></td>
+                        </tr>
+                      </template>
+                      <tr x-show="filteredConnected.length === 0">
+                        <td colspan="4" class="py-8 text-center text-gray-500">
+                          <span x-show="!(detail.connected || []).length">Switch hasn't reported any connected devices yet.</span>
+                          <span x-show="(detail.connected || []).length">No entries match filter.</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <p class="text-xs text-gray-500 mt-4 max-w-2xl">
+                  MAC and port are from the switch's forwarding table. IPs come from the switch's ARP table — typically only present for devices that have communicated with the switch's management IP, so don't expect every MAC to have one.
+                </p>
               </div>
             </template>
 
@@ -1228,6 +1292,7 @@
       loading:     false,
       tab:         'overview',
       portFilter:  '',
+      connectedFilter: '',
       selectedPort: null,
       toast:       null,
       showDeviceModal: false,
@@ -1704,10 +1769,11 @@
 
       get availableTabs() {
         if (this.isSwitch) return [
-          { id: 'overview', label: 'Overview',  icon: 'fa-solid fa-gauge' },
-          { id: 'ports',    label: 'Ports',     icon: 'fa-solid fa-network-wired' },
-          { id: 'poe',      label: 'PoE',       icon: 'fa-solid fa-bolt' },
-          { id: 'vlans',    label: 'VLANs',     icon: 'fa-solid fa-sitemap' },
+          { id: 'overview',  label: 'Overview',  icon: 'fa-solid fa-gauge' },
+          { id: 'ports',     label: 'Ports',     icon: 'fa-solid fa-network-wired' },
+          { id: 'connected', label: 'Connected', icon: 'fa-solid fa-plug' },
+          { id: 'poe',       label: 'PoE',       icon: 'fa-solid fa-bolt' },
+          { id: 'vlans',     label: 'VLANs',     icon: 'fa-solid fa-sitemap' },
         ];
         if (this.isServer) {
           const tabs = [
@@ -1745,6 +1811,18 @@
         const q = this.portFilter.toLowerCase();
         return ports.filter(p =>
           String(p.index).includes(q) || (p.name || '').toLowerCase().includes(q) || (p.alias || '').toLowerCase().includes(q)
+        );
+      },
+
+      get filteredConnected() {
+        const items = this.detail.connected || [];
+        if (!this.connectedFilter) return items;
+        const q = this.connectedFilter.toLowerCase();
+        return items.filter(c =>
+          (c.mac || '').toLowerCase().includes(q) ||
+          (c.vendor || '').toLowerCase().includes(q) ||
+          (c.ip || '').toLowerCase().includes(q) ||
+          String(c.port_id).includes(q)
         );
       },
 
@@ -1820,6 +1898,20 @@
         const poe = this.detail.poe;
         if (!poe?.ports) return null;
         return poe.ports.find(p => p.portIndex === String(portIndex)) || null;
+      },
+
+      connectedForPort(portIndex) {
+        return (this.detail.connected || []).filter(c => String(c.port_id) === String(portIndex));
+      },
+
+      connectedSummary(portIndex) {
+        const items = this.connectedForPort(portIndex);
+        if (items.length === 0) return null;
+        if (items.length === 1) {
+          const c = items[0];
+          return c.vendor || (c.ip ? c.ip : c.mac);
+        }
+        return `${items.length} devices`;
       },
 
       poeStatus(portIndex) {
