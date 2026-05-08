@@ -15,6 +15,7 @@ from .models import Device, DeviceCache, AuthUser
 from .schemas import DeviceCreate, DeviceUpdate, LoginRequest, ChangePasswordRequest
 from . import poller
 from .adapters import get_adapter
+from .adapters import oui as oui_db
 from .auth import (
     SESSION_USER_KEY,
     authenticate,
@@ -57,13 +58,19 @@ manager = ConnectionManager()
 async def lifespan(app: FastAPI):
     init_db()
     bootstrap_admin()
-    task = asyncio.create_task(poller.poll_loop(on_update=manager.broadcast_json))
+    # Non-blocking — if IEEE is unreachable, startup proceeds against the
+    # bundled OUI CSV. Refresh runs once at boot; the 30-day staleness check
+    # inside refresh_if_stale makes restarts cheap.
+    oui_refresh_task = asyncio.create_task(oui_db.refresh_if_stale())
+    poll_task = asyncio.create_task(poller.poll_loop(on_update=manager.broadcast_json))
     yield
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    poll_task.cancel()
+    oui_refresh_task.cancel()
+    for t in (poll_task, oui_refresh_task):
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
 
 app = FastAPI(title="HomeLab Manger", lifespan=lifespan)
 app.add_middleware(
