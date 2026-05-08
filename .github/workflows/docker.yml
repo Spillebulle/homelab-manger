@@ -83,9 +83,13 @@ jobs:
       contents: write   # required to create a Release
     steps:
       - name: Checkout
+        # No fetch-tags: actions/checkout@v4 already fetches the tag-as-ref on
+        # a tag push (GITHUB_REF=refs/tags/vX.Y.Z), and combining that with
+        # fetch-tags:true triggers "Cannot fetch both <sha> and refs/tags/v…"
+        # because the action tries to fetch the same ref twice. The annotated
+        # tag object (and its message body) is already present in the local
+        # repo after the default checkout.
         uses: actions/checkout@v4
-        with:
-          fetch-tags: true   # pull annotated-tag objects so we can read the message body
 
       - name: Read tag annotation into release body
         id: tag
