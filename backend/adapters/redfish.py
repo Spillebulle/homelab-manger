@@ -315,6 +315,23 @@ class RedfishAdapter(BaseAdapter):
     # File/Object Node"). The actual hardware platform (e.g. "5288 V3") lives
     # on hwSysModelType in the private MIB.
     _HUAWEI_CHASSIS_MODEL_OID = "1.3.6.1.4.1.2011.2.235.1.1.1.6.0"
+
+    # PCIe card inventory at .19.50.1.X. Discovered by walking on a
+    # FusionStorage 5288 V3:
+    #   .19.50.1.2.X  hwPCIeCardManufacturer  e.g. "Huawei"
+    #   .19.50.1.3.X  hwPCIeCardBoardId       Huawei internal code, e.g. "BC11HGSE"
+    #   .19.50.1.4.X  hwPCIeCardSerialNumber  e.g. "022BJKCNJ6004468"
+    #   .19.50.1.9.X  hwPCIeCardName          friendly name when present, else
+    #                                          falls back to the system marketing
+    #                                          string (e.g. "FusionStorage File/
+    #                                          Object Node") for embedded NICs
+    # Use Col 9 when meaningful, fall back to Col 3 (BoardId) when it's empty
+    # or matches the system-level marketing name.
+    _HUAWEI_PCIE_BASE        = "1.3.6.1.4.1.2011.2.235.1.1.19.50.1"
+    _HUAWEI_PCIE_MFG_OID     = _HUAWEI_PCIE_BASE + ".2"
+    _HUAWEI_PCIE_BOARDID_OID = _HUAWEI_PCIE_BASE + ".3"
+    _HUAWEI_PCIE_SERIAL_OID  = _HUAWEI_PCIE_BASE + ".4"
+    _HUAWEI_PCIE_NAME_OID    = _HUAWEI_PCIE_BASE + ".9"
     # PSU subtree (.6.50). Discovered by walking the Huawei MIB on a
     # FusionStorage node; col 4 = model name, col 6 = rated W, col 8 = live
     # input watts, col 13 = "PS1"/"PS2". No output-watts column exists on
@@ -458,6 +475,99 @@ class RedfishAdapter(BaseAdapter):
             except Exception:
                 pass
 
+    async def _huawei_pcie_cards(self) -> list[dict]:
+        """Walk the Huawei PCIe inventory table and return a list of
+        `{id, manufacturer, model, boardId, serial, class}` dicts. The system
+        marketing name (e.g. "FusionStorage File/Object Node") is filtered out
+        of `model` and replaced by the Huawei BoardId — embedded NICs that
+        don't carry a friendly name fall back to that. Best-effort: returns
+        [] on any SNMP failure."""
+        setup = await self._huawei_snmp_setup()
+        if not setup:
+            return []
+        engine, usm, transport, ps = setup
+        # System marketing name leaks into the per-card "Name" column for
+        # cards that have no proper friendly label. We compare against the
+        # Redfish System.Model so we know to drop it.
+        sys_model = (self._system_cache or {}).get("Model", "") or ""
+        try:
+            mfg, board_id, serial, name = await asyncio.gather(
+                self._snmp_walk_column(engine, usm, transport, ps, self._HUAWEI_PCIE_MFG_OID),
+                self._snmp_walk_column(engine, usm, transport, ps, self._HUAWEI_PCIE_BOARDID_OID),
+                self._snmp_walk_column(engine, usm, transport, ps, self._HUAWEI_PCIE_SERIAL_OID),
+                self._snmp_walk_column(engine, usm, transport, ps, self._HUAWEI_PCIE_NAME_OID),
+                return_exceptions=True,
+            )
+        finally:
+            try:
+                engine.close_dispatcher()
+            except Exception:
+                pass
+
+        def _safe(d):
+            return d if isinstance(d, dict) else {}
+
+        mfg, board_id, serial, name = _safe(mfg), _safe(board_id), _safe(serial), _safe(name)
+        all_indices = sorted(set(mfg) | set(board_id) | set(serial) | set(name), key=lambda x: int(x) if x.isdigit() else 9999)
+
+        out: list[dict] = []
+        for idx in all_indices:
+            bid = (board_id.get(idx) or "").strip()
+            raw_name = (name.get(idx) or "").strip()
+            # Drop system-marketing-name fallbacks; use BoardId in their place.
+            if raw_name and raw_name == sys_model:
+                raw_name = ""
+            model = raw_name or bid
+            if not model:
+                continue
+            out.append({
+                "id":            idx,
+                "manufacturer":  (mfg.get(idx) or "").strip() or None,
+                "model":         model,
+                "boardId":       bid or None,
+                "serial":        (serial.get(idx) or "").strip() or None,
+                "class":         self._classify_pcie_card(bid, raw_name),
+            })
+        return out
+
+    @staticmethod
+    async def _snmp_walk_column(engine, usm, transport, ps, oid: str) -> dict[str, str]:
+        """Walk a single SNMP column, return {row-index: stringified-value}."""
+        out: dict[str, str] = {}
+        async for errInd, errStat, _i, vbs in ps.walk_cmd(
+            engine, usm, transport, ps.ContextData(),
+            ps.ObjectType(ps.ObjectIdentity(oid)),
+            lexicographicMode=False,
+        ):
+            if errInd or errStat:
+                break
+            for name, val in vbs:
+                idx = str(name).rsplit(".", 1)[-1]
+                out[idx] = val.prettyPrint().strip()
+        return out
+
+    @staticmethod
+    def _classify_pcie_card(board_id: str, model: str) -> str | None:
+        """Heuristic card classifier used to populate the Class column.
+        Pattern-matches Huawei BoardId prefixes (BC1x = NIC, BC5x/BC6x = RAID,
+        BC8x = GPU) and falls back to scanning the friendly model string for
+        common keywords."""
+        bid = (board_id or "").upper()
+        mdl = (model or "").upper()
+        if any(s in mdl for s in ("RAID", "MEGARAID", "HBA", "SR430", "SR440", "SR130", "SR150", "SR160")):
+            return "RAID"
+        if any(s in mdl for s in ("ETHERNET", "GBASE", "10GE", "25GE", "40GE", "100GE", "NIC")):
+            return "Network"
+        if "GPU" in mdl or "TESLA" in mdl or "INFINIBAND" in mdl:
+            return "GPU/Accel"
+        if bid.startswith("BC1") or bid.startswith("BC2"):
+            return "Network"
+        if bid.startswith("BC5") or bid.startswith("BC6"):
+            return "RAID"
+        if bid.startswith("BC8"):
+            return "GPU/Accel"
+        return None
+
     @staticmethod
     async def _snmp_memory_fields(engine, usm, transport, ps) -> dict[str, dict]:
         async def _walk(oid: str) -> dict[str, str]:
@@ -529,10 +639,18 @@ class RedfishAdapter(BaseAdapter):
         # DIMM type, and DIMM slot location are all missing. Overlay them from
         # the Huawei Server MIB over SNMPv3. Gated on the System Manufacturer
         # to avoid per-poll SNMP timeouts on iLO / iDRAC.
+        pcie: list[dict] = []
         if (sys.get("Manufacturer") or "").lower().startswith("huawei"):
             await self._huawei_enrich(cpus, memory)
+            # iBMC Redfish 1.0.2 has no PCIeDevices endpoint at all. The
+            # Huawei MIB has the inventory; surface it here so the Hardware
+            # tab's PCIe sub-tab is populated.
+            try:
+                pcie = await self._huawei_pcie_cards()
+            except Exception:
+                pcie = []
 
-        return {"cpus": cpus, "memory": memory}
+        return {"cpus": cpus, "memory": memory, "pcie": pcie}
 
     async def _storage(self, sid: str) -> dict:
         # Huawei iBMC reports this collection at /Systems/{sid}/Storages (with
@@ -575,6 +693,26 @@ class RedfishAdapter(BaseAdapter):
                     "rotationRPM":      dr.get("RotationSpeedRPM"),
                     "failurePredicted": dr.get("FailurePredicted", False),
                 })
+
+        # Huawei iBMC's StorageController collection has no Manufacturer or
+        # Model on this firmware — the controller name is the literal
+        # "Storage", which is useless in the UI. Pull the actual RAID card
+        # model from the PCIe MIB and inject it as the controller's `model`
+        # field. The frontend renders `c.model || c.name`, so this surfaces
+        # without further changes.
+        if (sys.get("Manufacturer") or "").lower().startswith("huawei") and controllers:
+            try:
+                cards = await self._huawei_pcie_cards()
+            except Exception:
+                cards = []
+            raid = next((c for c in cards if c.get("class") == "RAID"), None)
+            if raid:
+                for ctrl in controllers:
+                    nm = (ctrl.get("name") or "").strip().lower()
+                    if not ctrl.get("model") and nm in ("", "storage"):
+                        ctrl["model"]        = raid["model"]
+                        ctrl["manufacturer"] = raid.get("manufacturer")
+                        ctrl["boardId"]      = raid.get("boardId")
 
         return {"controllers": controllers, "disks": disks}
 
@@ -630,6 +768,10 @@ class RedfishAdapter(BaseAdapter):
             supplies.append({
                 "name":                p.get("Name"),
                 "model":               p.get("Model"),
+                "manufacturer":        p.get("Manufacturer"),
+                "powerSupplyType":     p.get("PowerSupplyType"),
+                "firmwareVersion":     p.get("FirmwareVersion"),
+                "lineInputVoltage":    p.get("LineInputVoltage"),
                 "serial":              p.get("SerialNumber"),
                 "lastOutputWatts":     watts,
                 "capacityWatts":       p.get("PowerCapacityWatts"),

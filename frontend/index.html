@@ -858,18 +858,52 @@
                                   class="text-xs" x-text="psu.health || psu.operState || psu.state || '—'"></span>
                           </div>
                           <dl class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                            <template x-if="psu.model">
+                              <div class="contents">
+                                <dt class="text-gray-500">Model</dt>
+                                <dd class="text-gray-200 break-all" x-text="psu.model"></dd>
+                              </div>
+                            </template>
+                            <template x-if="psu.manufacturer">
+                              <div class="contents">
+                                <dt class="text-gray-500">Manufacturer</dt>
+                                <dd class="text-gray-200" x-text="psu.manufacturer"></dd>
+                              </div>
+                            </template>
+                            <template x-if="psu.powerSupplyType">
+                              <div class="contents">
+                                <dt class="text-gray-500">Type</dt>
+                                <dd class="text-gray-200" x-text="psu.powerSupplyType"></dd>
+                              </div>
+                            </template>
                             <dt class="text-gray-500">Max Output</dt>
                             <dd class="text-gray-200" x-text="(psu.maxOutputWatts || psu.capacityWatts || psu.maxOutput || '—') + (psu.maxOutputWatts || psu.capacityWatts ? ' W' : '')"></dd>
                             <dt class="text-gray-500">Input (AC)</dt>
                             <dd class="text-gray-200 font-mono" x-text="psu.inputWatts != null ? psu.inputWatts + ' W' : '—'"></dd>
                             <template x-if="psu.lastOutputWatts != null">
-                              <dt class="text-gray-500">Output (DC)</dt>
+                              <div class="contents">
+                                <dt class="text-gray-500">Output (DC)</dt>
+                                <dd class="text-gray-200 font-mono" x-text="psu.lastOutputWatts + ' W'"></dd>
+                              </div>
                             </template>
-                            <template x-if="psu.lastOutputWatts != null">
-                              <dd class="text-gray-200 font-mono" x-text="psu.lastOutputWatts + ' W'"></dd>
+                            <template x-if="psu.lineInputVoltage != null">
+                              <div class="contents">
+                                <dt class="text-gray-500">Line Voltage</dt>
+                                <dd class="text-gray-200 font-mono" x-text="psu.lineInputVoltage + ' V'"></dd>
+                              </div>
                             </template>
-                            <dt x-show="psu.serial" class="text-gray-500">Serial</dt>
-                            <dd x-show="psu.serial" class="font-mono text-xs text-gray-400" x-text="psu.serial"></dd>
+                            <template x-if="psu.firmwareVersion">
+                              <div class="contents">
+                                <dt class="text-gray-500">Firmware</dt>
+                                <dd class="text-gray-200 font-mono" x-text="psu.firmwareVersion"></dd>
+                              </div>
+                            </template>
+                            <template x-if="psu.serial">
+                              <div class="contents">
+                                <dt class="text-gray-500">Serial</dt>
+                                <dd class="font-mono text-xs text-gray-400" x-text="psu.serial"></dd>
+                              </div>
+                            </template>
                           </dl>
                         </div>
                       </template>
