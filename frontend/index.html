@@ -1956,6 +1956,7 @@
         // Friendly labels for known keys; anything else falls through to the
         // generic "camelCase → Title Case" transform.
         const labels = {
+          // Switches
           sysName:    'Hostname',
           sysUptime:  'Uptime',
           ipAddress:  'IP Address',
@@ -1965,13 +1966,28 @@
           mac:        'MAC',
           firmware:   'Firmware',
           serial:     'Serial Number',
+          // Servers (Redfish / iBMC / iLO / iDRAC / CIMC)
+          manufacturer: 'Manufacturer',
+          model:        'Model',
+          hostname:     'Hostname',
+          powerState:   'Power',
+          health:       'Health',
+          bmcIp:        'BMC IP',
+          bmcFirmware:  'BMC Firmware',
+          biosVersion:  'BIOS Version',
+          uuid:         'UUID',
         };
         const formatters = {
           ipOrigin: v => v === 'dhcp' ? 'Enabled' : v === 'manual' ? 'Disabled (static)' : v,
           mac: v => String(v).toUpperCase(),
         };
         // Display order: identity → uptime → network → hardware identity.
-        const order = ['sysName','sysUptime','ipAddress','subnetMask','gateway','ipOrigin','mac','firmware','serial'];
+        // Server keys go after the switch keys; for server data, switch keys
+        // are absent so servers effectively start at `manufacturer`.
+        const order = [
+          'sysName','sysUptime','ipAddress','subnetMask','gateway','ipOrigin','mac','firmware','serial',
+          'manufacturer','model','hostname','powerState','health','bmcIp','bmcFirmware','biosVersion','uuid',
+        ];
         const entries = Object.entries(s).filter(([k,v]) => !exclude.has(k) && v != null && v !== '');
         entries.sort(([a],[b]) => {
           const ai = order.indexOf(a), bi = order.indexOf(b);

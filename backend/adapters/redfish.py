@@ -139,17 +139,95 @@ class RedfishAdapter(BaseAdapter):
 
     async def _status(self, sid: str) -> dict:
         s = await self._get(f"/redfish/v1/Systems/{sid}")
+        manufacturer = s.get("Manufacturer", "")
+        model        = s.get("Model", "")
+
+        # Manager / BMC enrichment — firmware version and management IP. Best-
+        # effort: any failure leaves the field null.
+        bmc_firmware = ""
+        bmc_ip       = ""
+        try:
+            mgr = await self._first_manager()
+            if mgr:
+                bmc_firmware = mgr.get("FirmwareVersion", "") or ""
+                bmc_ip = await self._first_bmc_ipv4(mgr) or ""
+        except Exception:
+            pass
+
+        # Huawei System.Model is the marketing/configuration name (e.g.
+        # "FusionStorage File/Object Node"); the real hardware platform comes
+        # from the private MIB. Only swap in the SNMP value when present and
+        # non-trivial (the OID returns "0" or empty on some firmwares).
+        if manufacturer.lower().startswith("huawei"):
+            try:
+                real = await self._huawei_chassis_model()
+                if real and real != "0":
+                    model = real
+            except Exception:
+                pass
+
         return {
-            "online":      True,
-            "model":       s.get("Model", ""),
-            "manufacturer":s.get("Manufacturer", ""),
-            "serial":      s.get("SerialNumber", ""),
-            "uuid":        s.get("UUID", ""),
-            "powerState":  s.get("PowerState", ""),
-            "health":      s.get("Status", {}).get("Health", ""),
-            "biosVersion": s.get("BiosVersion", ""),
-            "hostname":    s.get("HostName", ""),
+            "online":       True,
+            "manufacturer": manufacturer,
+            "model":        model,
+            "hostname":     s.get("HostName", ""),
+            "serial":       s.get("SerialNumber", ""),
+            "powerState":   s.get("PowerState", ""),
+            "health":       s.get("Status", {}).get("Health", ""),
+            "bmcIp":        bmc_ip,
+            "bmcFirmware":  bmc_firmware,
+            "biosVersion":  s.get("BiosVersion", ""),
+            "uuid":         s.get("UUID", ""),
         }
+
+    async def _first_manager(self) -> dict | None:
+        """Return the first Manager (BMC) object, or None if absent."""
+        idx = await self._get("/redfish/v1/Managers")
+        for member in (idx.get("Members") or []):
+            url = member.get("@odata.id")
+            if url:
+                return await self._get(url)
+        return None
+
+    async def _first_bmc_ipv4(self, mgr: dict) -> str | None:
+        """Walk Manager.EthernetInterfaces for the first non-link-local IPv4."""
+        eth_url = (mgr.get("EthernetInterfaces") or {}).get("@odata.id")
+        if not eth_url:
+            return None
+        eth_idx = await self._get(eth_url)
+        for em in (eth_idx.get("Members") or []):
+            url = em.get("@odata.id")
+            if not url:
+                continue
+            iface = await self._get(url)
+            for entry in (iface.get("IPv4Addresses") or []):
+                addr = entry.get("Address") or ""
+                if addr and not addr.startswith(("0.", "169.254.", "127.")):
+                    return addr
+        return None
+
+    async def _huawei_chassis_model(self) -> str | None:
+        """SNMPv3 GET on hwSysModelType for the actual hardware platform.
+        Reuses the same auth setup as _huawei_enrich (iBMC's local user
+        doubles as the SNMPv3 USM user)."""
+        snmp = await self._huawei_snmp_setup()
+        if not snmp:
+            return None
+        engine, usm, transport, ps = snmp
+        try:
+            it = ps.get_cmd(
+                engine, usm, transport, ps.ContextData(),
+                ps.ObjectType(ps.ObjectIdentity(self._HUAWEI_CHASSIS_MODEL_OID)),
+            )
+            err_ind, err_stat, _err_idx, vbs = await it
+            if err_ind or err_stat:
+                return None
+            for _name, value in vbs:
+                s = str(value).strip()
+                return s or None
+        except Exception:
+            return None
+        return None
 
     # Huawei iBMC (Redfish 1.0.2) leaves Processor.Model as the literal stub
     # "Central Processor" and exposes no Description and no Oem extension. The
@@ -233,6 +311,10 @@ class RedfishAdapter(BaseAdapter):
     _HUAWEI_CPU_MODEL_OID    = "1.3.6.1.4.1.2011.2.235.1.1.15.50.1.4"
     _HUAWEI_MEM_SLOT_OID     = "1.3.6.1.4.1.2011.2.235.1.1.16.50.1.10"
     _HUAWEI_MEM_TYPE_OID     = "1.3.6.1.4.1.2011.2.235.1.1.16.50.1.11"
+    # System.Model on iBMC carries the marketing string (e.g. "FusionStorage
+    # File/Object Node"). The actual hardware platform (e.g. "5288 V3") lives
+    # on hwSysModelType in the private MIB.
+    _HUAWEI_CHASSIS_MODEL_OID = "1.3.6.1.4.1.2011.2.235.1.1.1.6.0"
     # PSU subtree (.6.50). Discovered by walking the Huawei MIB on a
     # FusionStorage node; col 4 = model name, col 6 = rated W, col 8 = live
     # input watts, col 13 = "PS1"/"PS2". No output-watts column exists on
