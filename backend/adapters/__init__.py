@@ -2,16 +2,18 @@ from .base import BaseAdapter
 from .snmp import SNMPAdapter
 from .dlink import DLinkAdapter
 from .cimc import CIMCAdapter
+from .cimc_redfish import CIMCRedfishAdapter
 from .redfish import RedfishAdapter
 
 ADAPTER_MAP: dict[str, type[BaseAdapter]] = {
-    "snmp":    SNMPAdapter,
-    "dlink":   DLinkAdapter,
-    "cimc":    CIMCAdapter,
-    "redfish": RedfishAdapter,
-    "ilo":     RedfishAdapter,   # HP iLO 5+
-    "idrac":   RedfishAdapter,   # Dell iDRAC 8+
-    "ibmc":    RedfishAdapter,   # Huawei iBMC
+    "snmp":         SNMPAdapter,
+    "dlink":        DLinkAdapter,
+    "cimc":         CIMCAdapter,         # UCS C-series M2/M3, CIMC < 3.0 — XMLAPI + IPMI
+    "cimc_redfish": CIMCRedfishAdapter,  # UCS C-series with CIMC 3.0+ — Redfish + XMLAPI hybrid
+    "redfish":      RedfishAdapter,
+    "ilo":          RedfishAdapter,      # HP iLO 5+
+    "idrac":        RedfishAdapter,      # Dell iDRAC 8+
+    "ibmc":         RedfishAdapter,      # Huawei iBMC
 }
 
 

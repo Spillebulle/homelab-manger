@@ -143,8 +143,8 @@
                   <span class="text-xs text-gray-500" x-text="d.last_seen ? relTime(d.last_seen) : 'never'"></span>
                 </div>
                 <div x-show="d.status_error" class="mt-2 text-xs text-red-400 truncate" x-text="d.status_error"></div>
-                <div x-show="d.status && d.status.sysDescr" class="mt-2 text-xs text-gray-500 truncate" x-text="d.status && d.status.sysDescr"></div>
-                <div x-show="d.status && d.status.model" class="mt-1 text-xs text-gray-400 truncate"
+                <div x-show="d.status && d.status.sysDescr" class="mt-2 text-xs text-gray-400 truncate" x-text="d.status && d.status.sysDescr"></div>
+                <div x-show="d.status && d.status.model" class="mt-2 text-xs text-gray-400 truncate"
                      x-text="d.status && (d.status.model + (d.status.serial ? ' · ' + d.status.serial : ''))"></div>
               </div>
             </template>
@@ -1020,8 +1020,10 @@
                   </div>
                 </template>
 
-                <!-- CIMC (Legacy Java) -->
-                <template x-if="selectedDevice?.adapter_type === 'cimc'">
+                <!-- CIMC (Legacy Java) — same JNLP path is used by both the legacy
+                     XMLAPI adapter and the 3.0+ Redfish-hybrid adapter, since
+                     CIMC 3.0 still has only the Java KVM (no HTML5). -->
+                <template x-if="['cimc', 'cimc_redfish'].includes(selectedDevice?.adapter_type)">
                   <div class="bg-card border border-border rounded-lg p-6 max-w-2xl">
                     <h3 class="text-white font-semibold text-lg mb-2">
                       <i class="fa-solid fa-display mr-1.5"></i>Virtual KVM Console
@@ -1102,7 +1104,8 @@
             <select x-model="form.adapter_type" class="input w-full">
               <option value="snmp">SNMP (generic)</option>
               <option value="dlink">D-Link (SNMP+SSH)</option>
-              <option value="cimc">Cisco CIMC</option>
+              <option value="cimc">Cisco CIMC (≤ 2.x — XMLAPI/IPMI)</option>
+              <option value="cimc_redfish">Cisco CIMC (3.0+ — Redfish)</option>
               <option value="redfish">Redfish (generic)</option>
               <option value="ilo">HP iLO (Redfish)</option>
               <option value="idrac">Dell iDRAC (Redfish)</option>
@@ -1145,7 +1148,7 @@
         </template>
 
         <!-- CIMC / Redfish credentials -->
-        <template x-if="['cimc','redfish','ilo','idrac','ibmc'].includes(form.adapter_type)">
+        <template x-if="['cimc','cimc_redfish','redfish','ilo','idrac','ibmc'].includes(form.adapter_type)">
           <div class="space-y-3 border border-border rounded-lg p-4">
             <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Credentials</div>
             <div class="grid grid-cols-2 gap-3">
@@ -1824,8 +1827,8 @@
             { id: 'power',    label: 'Power',     icon: 'fa-solid fa-plug' },
             { id: 'sensors',  label: 'Sensors',   icon: 'fa-solid fa-thermometer-half' },
           ];
-          // Enable the KVM/Console tab for both Cisco and Huawei
-          if (['cimc', 'ibmc'].includes(this.selectedDevice?.adapter_type)) {
+          // Enable the KVM/Console tab for Cisco (legacy + Redfish) and Huawei
+          if (['cimc', 'cimc_redfish', 'ibmc'].includes(this.selectedDevice?.adapter_type)) {
             tabs.push({ id: 'kvm', label: 'Console', icon: 'fa-solid fa-display' });
           }
           return tabs;

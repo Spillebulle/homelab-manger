@@ -1,8 +1,13 @@
 import asyncio
 import json
 import logging
+import secrets
+import ssl
+import time
 from contextlib import asynccontextmanager
+from threading import Lock
 
+import httpx
 from fastapi import APIRouter, FastAPI, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -262,14 +267,22 @@ async def port_action(device_id: int, port_id: str, action: dict, db: Session = 
 
 
 @api.get("/devices/{device_id}/kvm.jnlp")
-async def download_kvm_jnlp(device_id: int, db: Session = Depends(get_db)):
+async def download_kvm_jnlp(device_id: int, request: Request, db: Session = Depends(get_db)):
     """
     KVM JNLP launcher for server adapters that use Java Web Start (CIMC, iBMC).
     CRITICAL: We do NOT call adapter.close() here for CIMC, as tokens are tied
     to the active XMLAPI session.
+
+    For `cimc_redfish` we additionally rewrite the JAR URLs in the JNLP body to
+    proxy through `/api/cimc-kvm-proxy/{id}/...`. CIMC 3.0+ returns 403 on
+    HEAD requests against `/software/*` (GET works fine), and JWS issues a
+    HEAD on every cached JAR before launch — so without the proxy, JWS
+    aborts on the second launch with `Server returned HTTP response code:
+    403 for URL: .../avctNuova.jar.pack.gz`. The proxy synthesises a 200 OK
+    on HEAD and streams the GET through.
     """
     d = _device_or_404(device_id, db)
-    if d.adapter_type not in ["cimc", "ibmc"]:
+    if d.adapter_type not in ["cimc", "cimc_redfish", "ibmc"]:
         raise HTTPException(status_code=400, detail=f"KVM JNLP not supported for {d.adapter_type}")
 
     creds = json.loads(d.credentials) if d.credentials else {}
@@ -280,15 +293,142 @@ async def download_kvm_jnlp(device_id: int, db: Session = Depends(get_db)):
     if "error" in result:
         raise HTTPException(status_code=502, detail=result["error"])
 
+    body = result["jnlp"]
+    if d.adapter_type == "cimc_redfish":
+        body = _rewrite_cimc_jnlp_for_proxy(body, d, creds, request)
+
     filename = f"{d.adapter_type}-{d.name}.jnlp"
     return Response(
-        content=result["jnlp"],
+        content=body,
         media_type="application/x-java-jnlp-file",
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
             "Cache-Control": "no-cache"
         }
     )
+
+
+# ── CIMC KVM JAR proxy ───────────────────────────────────────────────────────
+#
+# JWS launches the Cisco KVM viewer by fetching a handful of .jar.pack.gz
+# files from `https://<bmc>/software/`. CIMC 3.0(4r) firmware returns 403
+# on HEAD requests there (verified empirically on a UCS C22 M3S; the same
+# paths return 200 on GET, even unauthenticated). JWS HEAD-validates each
+# cached resource on launch via `ResourceProviderImpl.checkUpdateAvailable`
+# regardless of the JNLP `<update>` element, hits the 403, and aborts.
+#
+# To work around this, the JNLP we serve for `cimc_redfish` rewrites every
+# `https://<bmc>/software/<jar>` URL to `/api/cimc-kvm-proxy/<id>/<jar>?t=<token>`.
+# The proxy below answers HEAD with a synthetic 200 (so JWS happily proceeds)
+# and streams the GET through to CIMC. JWS doesn't carry our session cookie,
+# so the proxy is gated by a one-shot token minted alongside the JNLP — the
+# token is good for 10 minutes and only for the device it was issued
+# against. Tokens stay valid for repeat fetches because JWS will issue
+# multiple GETs per launch (different OS-arch native libs, etc.).
+
+_KVM_PROXY_TTL_SECONDS = 600
+_kvm_proxy_tokens: dict[str, dict] = {}
+_kvm_proxy_lock = Lock()
+
+
+def _mint_kvm_proxy_token(device_id: int) -> str:
+    token = secrets.token_urlsafe(24)
+    expires = time.time() + _KVM_PROXY_TTL_SECONDS
+    with _kvm_proxy_lock:
+        # Drop expired entries opportunistically — no separate sweeper task.
+        now = time.time()
+        for tok in [t for t, e in _kvm_proxy_tokens.items() if e["expires"] < now]:
+            _kvm_proxy_tokens.pop(tok, None)
+        _kvm_proxy_tokens[token] = {"device_id": device_id, "expires": expires}
+    return token
+
+
+def _validate_kvm_proxy_token(device_id: int, token: str) -> bool:
+    with _kvm_proxy_lock:
+        entry = _kvm_proxy_tokens.get(token)
+        if not entry:
+            return False
+        if entry["device_id"] != device_id:
+            return False
+        if entry["expires"] < time.time():
+            _kvm_proxy_tokens.pop(token, None)
+            return False
+        return True
+
+
+def _rewrite_cimc_jnlp_for_proxy(body: str, device, creds: dict, request: Request) -> str:
+    """Rewrite every `https://<bmc>:<port>/software/<file>` in the JNLP body
+    to an authenticated `/api/cimc-kvm-proxy/{id}/<file>?t=<token>` URL on
+    our backend. Leaves codebase / icon / helpurl alone — they're not
+    fetched by JWS in a way that exposes the HEAD-403 issue."""
+    import re
+    port = int(creds.get("port", 443))
+    proxy_base = str(request.base_url).rstrip("/") + f"/api/cimc-kvm-proxy/{device.id}"
+    token = _mint_kvm_proxy_token(device.id)
+    pat = re.compile(
+        rf"https://{re.escape(device.hostname)}:{port}/software/([A-Za-z0-9._-]+)"
+    )
+    return pat.sub(lambda m: f"{proxy_base}/{m.group(1)}?t={token}", body)
+
+
+def _legacy_bmc_ssl_context() -> ssl.SSLContext:
+    """Same legacy-cipher SSLContext the CIMC adapter uses — UCS C-series
+    BMCs ship 1024-bit RSA self-signed certs that modern OpenSSL refuses
+    under SECLEVEL=2 with `verify=False` alone."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    ctx.set_ciphers("DEFAULT:@SECLEVEL=1")
+    return ctx
+
+
+@app.api_route("/api/cimc-kvm-proxy/{device_id}/{jar_name}", methods=["GET", "HEAD"])
+async def cimc_kvm_proxy(device_id: int, jar_name: str, t: str, request: Request,
+                         db: Session = Depends(get_db)):
+    if not _validate_kvm_proxy_token(device_id, t):
+        raise HTTPException(status_code=403, detail="Invalid or expired proxy token")
+    d = _device_or_404(device_id, db)
+    if d.adapter_type != "cimc_redfish":
+        raise HTTPException(status_code=400, detail="Proxy only available for cimc_redfish")
+    # Defensive — `jar_name` should be a single segment by virtue of the route
+    # not using `:path`, but reject anything weird anyway.
+    if "/" in jar_name or "\\" in jar_name or jar_name.startswith("."):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    creds = json.loads(d.credentials) if d.credentials else {}
+    port = int(creds.get("port", 443))
+    target = f"https://{d.hostname}:{port}/software/{jar_name}"
+
+    # JWS HEADs cached resources before launch. CIMC 3.0+ refuses HEAD on
+    # /software/* with 403 — synthesise a 200 here so JWS proceeds to GET.
+    # Returning a Last-Modified that's always "now" forces JWS to skip the
+    # cache and re-fetch (its cached Last-Modified is older), which is the
+    # desired behaviour: the cached version may be from an older firmware
+    # rev where the JARs differed.
+    if request.method == "HEAD":
+        return Response(
+            status_code=200,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Last-Modified": time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime()),
+                "Cache-Control": "no-cache",
+            },
+        )
+
+    ctx = _legacy_bmc_ssl_context()
+    try:
+        async with httpx.AsyncClient(verify=ctx, timeout=60) as c:
+            r = await c.get(target)
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"BMC fetch failed: {e}")
+
+    # Strip hop-by-hop headers and the Server header so we don't leak
+    # the BMC's `Server: Monkey` banner.
+    drop = {"transfer-encoding", "connection", "keep-alive", "server",
+            "content-encoding", "content-length"}
+    forwarded = {k: v for k, v in r.headers.items() if k.lower() not in drop}
+    forwarded.setdefault("Content-Type", "application/octet-stream")
+    return Response(content=r.content, status_code=r.status_code, headers=forwarded)
 
 
 app.include_router(api)
