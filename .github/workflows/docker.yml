@@ -2,7 +2,11 @@ name: Build and publish container image
 
 on:
   push:
-    branches: [main]
+    # Only v* tags trigger a build. Pushing main on its own does NOT
+    # build — every release is tagged (per the project's release rules)
+    # and listening on both `branches: [main]` + `tags: ['v*']` causes a
+    # double run when main and the tag are pushed in sequence. For ad-hoc
+    # rebuilds without a new version, use `workflow_dispatch`.
     tags: ['v*']
   workflow_dispatch:
 
@@ -45,13 +49,16 @@ jobs:
           images: |
             ghcr.io/${{ github.repository }}
             ${{ secrets.DOCKERHUB_USERNAME }}/homelab-manger
+          # `flavor: latest=auto` tags semver tag pushes as :latest. We
+          # only build on v* tags now (see `on:` above), so dropping the
+          # branch/default-branch rules — they'd never match.
+          flavor: |
+            latest=auto
           tags: |
-            type=ref,event=branch
             type=ref,event=tag
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,format=short
-            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -65,7 +72,9 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Sync README to Docker Hub
-        if: github.ref == 'refs/heads/main'
+        # Was `github.ref == 'refs/heads/main'` — but main pushes don't
+        # trigger this workflow anymore, so re-anchor on tag pushes.
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: peter-evans/dockerhub-description@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
