@@ -5,10 +5,13 @@ D-Link adapter — extends generic SNMP with:
   - SSH interactive shell for configuration commands
 """
 import asyncio
+import logging
 import re
 import time
 from typing import Any
 from .snmp import SNMPAdapter, _walk, _safe_int
+
+logger = logging.getLogger(__name__)
 
 # D-Link enterprise OIDs for DGS-3120 PoE (1.3.6.1.4.1.171.12.18.x)
 _DLINK_POE_POWER      = "1.3.6.1.4.1.171.12.18.2.1.1.12"  # milliwatts consumed per port
@@ -179,6 +182,10 @@ class DLinkAdapter(SNMPAdapter):
         raw = result.get("output") or ""
         if not raw or "error" in result:
             return {}
+        # If SSH succeeded but the response carries no port lines, the firmware
+        # may have changed `show poe` formatting or PoE itself is disabled on
+        # the chassis. Either way the user sees "PoE info gone" — log so we can
+        # tell it apart from the SSH-down case (which is logged in _cli_many).
 
         # DGS-3120 ends each line with `\n\r` (LF before CR). Python's splitlines
         # treats these as two separators and produces empty lines between every
@@ -608,6 +615,19 @@ class DLinkAdapter(SNMPAdapter):
                         if usable:
                             setattr(opts, attr, usable)
 
+                # Surface what actually got negotiated. paramiko silently
+                # filters algorithms that the linked cryptography backend
+                # doesn't support; if a future paramiko/cryptography bump
+                # drops one of these, the docker logs will show exactly which
+                # category lost coverage instead of a bare "no acceptable
+                # kex algorithm" error.
+                logger.info(
+                    "DLink SSH algos to %s — kex=%s ciphers=%s macs=%s host_keys=%s",
+                    self.hostname,
+                    list(opts.kex), list(opts.ciphers),
+                    list(opts.digests), list(getattr(opts, host_key_attr)),
+                )
+
                 transport.start_client(timeout=10)
                 transport.auth_password(username, password)
 
@@ -631,6 +651,10 @@ class DLinkAdapter(SNMPAdapter):
                 channel.send("logout\n")
                 return results
             except Exception as exc:
+                logger.warning(
+                    "DLink SSH session to %s:%s failed: %s: %s",
+                    self.hostname, ssh_port, type(exc).__name__, exc,
+                )
                 err = {"error": str(exc)}
                 # Pad so callers indexing by command position still get a result.
                 return [err] * len(commands) if not transport else [err]
