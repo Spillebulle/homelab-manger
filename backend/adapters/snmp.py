@@ -51,9 +51,16 @@ _BRIDGE_BASE_MAC = "1.3.6.1.2.1.17.1.1.0"
 
 _IP_ORIGIN_NAMES = {1: "other", 2: "manual", 4: "dhcp", 5: "linklayer", 6: "random"}
 
+# POWER-ETHERNET-MIB pethPsePortDetectionStatus values, mapped to the three
+# states the UI actually distinguishes: delivering, fault, and "nothing here".
+# Standard state 2 (searching = PoE enabled but no PD detected) and state 5
+# (test) both fold to "disabled" so empty/idle PoE ports render without a
+# status dot — otherwise every disconnected PoE port carries a dim yellow
+# indicator and the ones genuinely delivering power get lost in the noise.
+# Same rule the D-Link CLI parser applies to "OFF/Interim".
 _POE_DETECTION_NAMES = {
-    1: "disabled", 2: "searching", 3: "delivering",
-    4: "fault",    5: "test",      6: "otherFault",
+    1: "disabled", 2: "disabled",  3: "delivering",
+    4: "fault",    5: "disabled",  6: "otherFault",
 }
 
 
@@ -348,8 +355,17 @@ class SNMPAdapter(BaseAdapter):
         main_watts = scalar_list(walks[3])
         cons_watts = scalar_list(walks[4])
 
+        # Sort numerically by (group, port). The keys look like "1.1", "1.10",
+        # "1.2"; sorted() on strings would produce 1.1, 1.10, 1.11, …, 1.2 —
+        # the classic natural-sort trap.
+        def _poe_key(k: str) -> tuple[int, ...]:
+            try:
+                return tuple(int(p) for p in k.split("."))
+            except ValueError:
+                return (10**9,)  # malformed keys go to the end
+
         ports = []
-        for key in sorted(admin_m):
+        for key in sorted(admin_m, key=_poe_key):
             port_idx = key.split(".")[-1]
             det = _safe_int(detect_m.get(key), 1)
             ports.append({

@@ -369,7 +369,7 @@
                                       class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded transition-colors"
                                       x-text="p.adminStatus === 1 ? 'Disable' : 'Enable'">
                               </button>
-                              <template x-if="selectedDevice?.adapter_type === 'dlink' && poePortData(p.index)">
+                              <template x-if="['dlink','hpe1820'].includes(selectedDevice?.adapter_type) && poePortData(p.index)">
                                 <button @click.stop="portAction(p.index, {type:'port_poe', enable: poePortData(p.index)?.detectionStatus === 'disabled' || !poePortData(p.index)?.adminEnabled})"
                                         :title="poePortData(p.index)?.adminEnabled ? 'Disable PoE' : 'Enable PoE'"
                                         class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded transition-colors"
@@ -1091,7 +1091,7 @@
         <div class="grid grid-cols-2 gap-4">
           <div>
             <label class="label">Device Type</label>
-            <select x-model="form.device_type" class="input w-full">
+            <select x-model="form.device_type" @change="onDeviceTypeChange()" class="input w-full">
               <option value="switch">Switch</option>
               <option value="server">Server</option>
               <option value="router">Router</option>
@@ -1102,20 +1102,15 @@
           <div>
             <label class="label">Adapter</label>
             <select x-model="form.adapter_type" class="input w-full">
-              <option value="snmp">SNMP (generic)</option>
-              <option value="dlink">D-Link (SNMP+SSH)</option>
-              <option value="cimc">Cisco CIMC (≤ 2.x — XMLAPI/IPMI)</option>
-              <option value="cimc_redfish">Cisco CIMC (3.0+ — Redfish)</option>
-              <option value="redfish">Redfish (generic)</option>
-              <option value="ilo">HP iLO (Redfish)</option>
-              <option value="idrac">Dell iDRAC (Redfish)</option>
-              <option value="ibmc">Huawei iBMC (Redfish)</option>
+              <template x-for="opt in adapterOptionsForType(form.device_type)" :key="opt.value">
+                <option :value="opt.value" x-text="opt.label"></option>
+              </template>
             </select>
           </div>
         </div>
 
-        <!-- SNMP / D-Link credentials -->
-        <template x-if="['snmp','dlink'].includes(form.adapter_type)">
+        <!-- SNMP / D-Link / HPE 1820 credentials -->
+        <template x-if="['snmp','dlink','hpe1820'].includes(form.adapter_type)">
           <div class="space-y-3 border border-border rounded-lg p-4">
             <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">SNMP</div>
             <div class="grid grid-cols-2 gap-3">
@@ -1141,6 +1136,22 @@
                 <div>
                   <label class="label">SSH Port</label>
                   <input x-model="form.credentials.ssh_port" class="input w-full" placeholder="22">
+                </div>
+              </div>
+            </template>
+            <template x-if="form.adapter_type === 'hpe1820'">
+              <div class="grid grid-cols-3 gap-3">
+                <div>
+                  <label class="label">Web User</label>
+                  <input x-model="form.credentials.web_username" class="input w-full" placeholder="admin">
+                </div>
+                <div>
+                  <label class="label">Web Password</label>
+                  <input x-model="form.credentials.web_password" type="password" class="input w-full">
+                </div>
+                <div>
+                  <label class="label">Web Port</label>
+                  <input x-model="form.credentials.web_port" class="input w-full" placeholder="80">
                 </div>
               </div>
             </template>
@@ -1717,6 +1728,60 @@
       },
 
       // ── device CRUD ───────────────────────────────────────────────────────
+
+      // Adapter catalog, keyed by device_type. When the user picks a type,
+      // only the adapters that make sense for that type appear in the
+      // dropdown — keeps "Cisco CIMC" out of the list for a PDU and "D-Link
+      // SSH" out of the list for a server.
+      adapterCatalog: {
+        switch: [
+          { value: 'snmp',         label: 'SNMP (generic)' },
+          { value: 'dlink',        label: 'D-Link (SNMP+SSH)' },
+          { value: 'hpe1820',      label: 'HPE OfficeConnect 1820 (SNMP+Web)' },
+        ],
+        router: [
+          { value: 'snmp',         label: 'SNMP (generic)' },
+        ],
+        server: [
+          { value: 'cimc',         label: 'Cisco CIMC (≤ 2.x — XMLAPI/IPMI)' },
+          { value: 'cimc_redfish', label: 'Cisco CIMC (3.0+ — Redfish)' },
+          { value: 'redfish',      label: 'Redfish (generic)' },
+          { value: 'ilo',          label: 'HP iLO (Redfish)' },
+          { value: 'idrac',        label: 'Dell iDRAC (Redfish)' },
+          { value: 'ibmc',         label: 'Huawei iBMC (Redfish)' },
+        ],
+        pdu: [
+          { value: 'snmp',         label: 'SNMP (generic)' },
+        ],
+        ups: [
+          { value: 'snmp',         label: 'SNMP (generic)' },
+        ],
+      },
+
+      adapterOptionsForType(deviceType) {
+        const base = this.adapterCatalog[deviceType] || this.adapterCatalog.switch;
+        // If we're editing a device whose adapter doesn't match the current
+        // device_type (e.g. a legacy "router with cimc"), include the
+        // existing value so the select renders it instead of going blank.
+        const current = this.form?.adapter_type;
+        if (current && !base.some(o => o.value === current)) {
+          return [...base, { value: current, label: current + ' (current)' }];
+        }
+        return base;
+      },
+
+      // When device_type changes, snap adapter_type to the first valid
+      // option for the new type unless the current value is still allowed.
+      // Check against the raw catalog, not adapterOptionsForType — the
+      // latter pads in the current value as a "(current)" fallback for
+      // edit-mode legacy data, which would suppress the snap.
+      onDeviceTypeChange() {
+        const opts = this.adapterCatalog[this.form.device_type] || this.adapterCatalog.switch;
+        if (!opts.some(o => o.value === this.form.adapter_type)) {
+          this.form.adapter_type = opts[0]?.value || 'snmp';
+        }
+      },
+
       openAddModal() {
         this.editingDevice = null;
         this.form = {
