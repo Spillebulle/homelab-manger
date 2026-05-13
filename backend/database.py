@@ -1,6 +1,6 @@
 import logging
 import os
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 
 logger = logging.getLogger(__name__)
@@ -13,6 +13,29 @@ engine = create_engine(
     connect_args={"check_same_thread": False},
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+@event.listens_for(engine, "connect")
+def _set_sqlite_pragmas(dbapi_connection, connection_record):
+    """Per-connection SQLite tuning, applied automatically when the pool hands
+    out a fresh connection. Three pragmas matter for our concurrency profile:
+
+    - journal_mode=WAL: writers don't block readers, lock acquisition is much
+      faster, and the database file stays consistent on crash. Persists at the
+      database level once set; the event listener just ensures it's on after a
+      fresh-DB bootstrap.
+    - busy_timeout=10000: 10 s wait when contending for the write lock, up from
+      SQLite's default 5 s. The poller fans out polls in parallel and each writes
+      its own cache rows; under bursty conditions (manual refresh stacking on top
+      of a scheduled tick) the default sometimes wasn't enough.
+    - synchronous=NORMAL: WAL mode's default; explicit so it's obvious. FULL is
+      pointlessly slow once you're already on WAL.
+    """
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=10000")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.close()
 
 
 class Base(DeclarativeBase):

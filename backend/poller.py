@@ -57,13 +57,20 @@ async def poll_device(device_id: int, on_update=None):
                 except Exception as exc:
                     logger.warning("poll %s/%s failed: %s", device.name, key, exc)
                     _upsert_cache(db, device_id, key, None, str(exc))
+                # Commit after each key so the write lock isn't held across
+                # the next adapter.fetch (which can run 20-30s on CIMC). Pre-
+                # v0.4.3 we committed once at the bottom, which under SQLite
+                # cascaded "database is locked" errors across parallel polls.
+                try:
+                    db.commit()
+                except Exception as commit_exc:
+                    logger.warning("poll %s/%s commit failed: %s", device.name, key, commit_exc)
+                    db.rollback()
         finally:
             try:
                 await adapter.close()
             except Exception:
                 pass
-
-        db.commit()
         
         # Fire the websocket broadcast!
         if on_update:
