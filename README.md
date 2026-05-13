@@ -92,6 +92,7 @@ The `/data` volume holds the SQLite database and the session-cookie secret — k
 | `ADMIN_PASSWORD` | Initial admin password. Default `changeme` (with a startup warning). Only read on first start. |
 | `SESSION_SECRET` | Cookie-signing secret. Auto-generated and persisted next to the DB if unset. |
 | `POLL_INTERVAL` | Seconds between background polls. Default `60`. |
+| `PORT` | Port uvicorn listens on inside the container. Default `8080`. Pair with a matching `-p host:container` if you override. |
 
 ## Resetting the admin password
 
