@@ -10,7 +10,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/github/license/Spillebulle/homelab-manger?style=flat-square" alt="License">
-  <img src="https://img.shields.io/github/actions/workflow/status/Spillebulle/homelab-manger/docker.yml?style=flat-square&label=build" alt="Build">
+  <img src="https://github.com/Spillebulle/homelab-manger/actions/workflows/docker.yml/badge.svg" alt="Build">
   <img src="https://img.shields.io/docker/pulls/spillebulle/homelab-manger?style=flat-square" alt="Docker pulls">
 </p>
 
