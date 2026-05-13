@@ -3,6 +3,8 @@ import json
 import logging
 from datetime import datetime
 
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
 from .database import SessionLocal
 from .models import Device, DeviceCache
 from .adapters import get_adapter
@@ -12,28 +14,29 @@ POLL_INTERVAL = int(60)  # seconds between full polls
 
 
 def _upsert_cache(db, device_id: int, key: str, data: str | None, error: str | None):
-    row = (
-        db.query(DeviceCache)
-        .filter(DeviceCache.device_id == device_id, DeviceCache.cache_key == key)
-        .first()
-    )
+    # SQLite's INSERT ... ON CONFLICT(...) DO UPDATE is atomic — pre-v0.4.2 we
+    # did SELECT-then-INSERT, which let two concurrent polls both miss the
+    # SELECT and both INSERT, leaving duplicate rows that confuse the cache
+    # reader. The unique index on (device_id, cache_key) is what makes this
+    # atomic; without it the ON CONFLICT clause has nothing to match against.
     now = datetime.utcnow()
-    if row:
-        if data is not None:
-            row.data = data
-            row.error = None
-        else:
-            row.error = error
-        row.updated_at = now
-    else:
-        row = DeviceCache(
-            device_id=device_id,
-            cache_key=key,
-            data=data,
-            error=error,
-            updated_at=now,
+    if data is not None:
+        stmt = sqlite_insert(DeviceCache).values(
+            device_id=device_id, cache_key=key, data=data, error=None, updated_at=now,
         )
-        db.add(row)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["device_id", "cache_key"],
+            set_={"data": data, "error": None, "updated_at": now},
+        )
+    else:
+        stmt = sqlite_insert(DeviceCache).values(
+            device_id=device_id, cache_key=key, data=None, error=error, updated_at=now,
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["device_id", "cache_key"],
+            set_={"error": error, "updated_at": now},
+        )
+    db.execute(stmt)
 
 
 async def poll_device(device_id: int, on_update=None):

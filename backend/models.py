@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, Text, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Boolean, Text, DateTime, ForeignKey, UniqueConstraint
 from .database import Base
 
 
@@ -26,6 +26,14 @@ class DeviceCache(Base):
     data = Column(Text)                               # JSON
     updated_at = Column(DateTime)
     error = Column(Text)
+
+    # Without this, two concurrent polls can both SELECT-miss and both INSERT,
+    # leaving duplicate (device_id, cache_key) rows. The cache_map reader picks
+    # whichever row SQLite returns last — sometimes the stale one — so the UI
+    # shows yesterday's data with no indication that's what happened.
+    __table_args__ = (
+        UniqueConstraint("device_id", "cache_key", name="uq_device_cache_key"),
+    )
 
 
 class AuthUser(Base):

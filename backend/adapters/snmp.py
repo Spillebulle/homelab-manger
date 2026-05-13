@@ -2,10 +2,13 @@
 Generic SNMP adapter using puresnmp (pure Python, no C deps, no version chaos).
 """
 import asyncio
+import logging
 from datetime import timedelta
 from typing import Any
 from .base import BaseAdapter
 from .oui import lookup as oui_lookup
+
+logger = logging.getLogger(__name__)
 
 # IF-MIB
 _IF_DESCR        = "1.3.6.1.2.1.2.2.1.2"
@@ -71,13 +74,19 @@ def _to_str(v) -> str:
 
 
 def _walk_sync(host: str, community: str, oid: str, port: int = 161) -> list[tuple[str, Any]]:
+    """Walk an OID subtree. Swallows exceptions and returns [] so a single failed
+    sub-walk doesn't blow up the caller, but logs the failure at WARNING so
+    silent-empty results are diagnosable. Empty community looks identical to
+    "device offline" at the wire level — both produce timeouts — so the log
+    message is the only way to tell them apart without packet capture."""
     import puresnmp
     results = []
     try:
         for vb in puresnmp.walk(host, community, oid, port=port):
             results.append((str(vb.oid), vb.value))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("SNMP walk failed: host=%s oid=%s community=%r port=%d — %s: %s",
+                       host, oid, community, port, type(exc).__name__, exc)
     return results
 
 
@@ -194,9 +203,13 @@ def _first_nonempty(walk_result) -> str | None:
 class SNMPAdapter(BaseAdapter):
     def __init__(self, hostname: str, credentials: dict):
         super().__init__(hostname, credentials)
-        self.community       = credentials.get("community", "public")
-        self.write_community = credentials.get("write_community", credentials.get("community", "private"))
-        self.port            = int(credentials.get("port", 161))
+        # `.get(key, default)` only uses the default when the key is missing.
+        # An empty string in the form lands in the JSON blob as "" — which is
+        # a valid community wire-side but always rejected by the agent — so
+        # use `or` to also fall back when the stored value is empty/None.
+        self.community       = credentials.get("community") or "public"
+        self.write_community = credentials.get("write_community") or self.community
+        self.port            = int(credentials.get("port") or 161)
 
     def get_supported_cache_keys(self) -> list[str]:
         return ["status", "ports", "poe", "connected"]
@@ -212,6 +225,11 @@ class SNMPAdapter(BaseAdapter):
         # All probes in parallel — single round-trip latency for the whole set.
         # Devices that don't expose a given table just return [] / None and
         # the corresponding field stays null in the response.
+        probe_labels = (
+            "sysName", "sysDescr", "sysUptime", "bridgeBaseMac",
+            "ipAdEntAddr", "ipAdEntNetMask", "ipAddressOrigin", "ipRouteNextHop",
+            "entPhysicalSoftwareRev", "entPhysicalSerialNum",
+        )
         results = await asyncio.gather(
             _get(self.hostname,  self.community, _SYS_NAME,         self.port),
             _get(self.hostname,  self.community, _SYS_DESCR,        self.port),
@@ -225,6 +243,16 @@ class SNMPAdapter(BaseAdapter):
             _walk(self.hostname, self.community, _ENT_SERIAL,       self.port),
             return_exceptions=True,
         )
+
+        # `return_exceptions=True` turns probe failures into values rather than
+        # propagating them — without this loop they vanish silently and the
+        # device just looks "offline" with no log line to debug. The walks
+        # already log via _walk_sync; only _get failures need surfacing here.
+        for label, result in zip(probe_labels, results):
+            if isinstance(result, Exception):
+                logger.warning("SNMP probe failed: host=%s probe=%s community=%r port=%d — %s: %s",
+                               self.hostname, label, self.community, self.port,
+                               type(result).__name__, result)
 
         def _ok(v):
             return None if isinstance(v, Exception) else v
@@ -273,8 +301,23 @@ class SNMPAdapter(BaseAdapter):
                     gateway = gw
                     break
 
+        online = name is not None
+        if not online:
+            # sysName is the cheapest "is this thing answering at all?" probe.
+            # When it comes back as None *and* nothing else did either, we're
+            # almost always looking at wrong creds or unreachable host — log
+            # so the user can tell those apart from a legitimately-down box.
+            other_results = (descr, uptime, base_mac, ipaddr_w, mask_w, origin_w, route_w, fw_w, sn_w)
+            if all(v is None or v == [] for v in other_results):
+                logger.warning(
+                    "SNMP host=%s appears offline or rejecting all probes "
+                    "(community=%r port=%d) — check community string, host reachability, "
+                    "and SNMP manager allow-list on the device",
+                    self.hostname, self.community, self.port,
+                )
+
         return {
-            "online":     name is not None,
+            "online":     online,
             "sysName":    _to_str(name)  if name  is not None else None,
             "sysDescr":   _to_str(descr) if descr is not None else None,
             "sysUptime":  _format_uptime(uptime),
