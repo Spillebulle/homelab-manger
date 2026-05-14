@@ -47,6 +47,7 @@ def init_db():
     from . import models  # noqa: F401 — ensure models are registered
     Base.metadata.create_all(bind=engine)
     _migrate_device_cache_unique(engine)
+    _migrate_credentials_to_encrypted(engine)
 
 
 def _migrate_device_cache_unique(engine):
@@ -67,6 +68,45 @@ def _migrate_device_cache_unique(engine):
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_device_cache_key "
             "ON device_cache(device_id, cache_key)"
         ))
+
+
+def _migrate_credentials_to_encrypted(engine):
+    """Pre-encryption deployments stored `devices.credentials` as plaintext
+    JSON. The EncryptedJSON column type decodes those transparently on read,
+    but every NEW write goes out as ciphertext — so a row only flips to
+    encrypted form when the user next saves that device. To avoid leaving
+    plaintext sitting in the DB indefinitely, do a one-shot rewrite here on
+    startup: for every row whose `credentials` doesn't start with `enc:`,
+    decode it and re-write it back through the encryption path.
+
+    Idempotent — encrypted rows are skipped. Safe to run repeatedly."""
+    # Lazy import — models.py imports credentials_crypto which imports
+    # database.py for the DB_PATH constant. The cycle resolves at function-
+    # call time but not at module-import time.
+    from .credentials_crypto import is_encrypted, encrypt_credentials, decrypt_credentials
+    with engine.begin() as conn:
+        rows = conn.execute(text("SELECT id, credentials FROM devices")).fetchall()
+        upgraded = 0
+        for row_id, raw in rows:
+            if raw is None or is_encrypted(raw):
+                continue
+            # Decode plaintext JSON via the same helper used at read time, so
+            # malformed legacy values produce {} rather than crashing the
+            # migration — the user can re-enter creds via the edit modal.
+            value = decrypt_credentials(raw)
+            new_blob = encrypt_credentials(value)
+            conn.execute(
+                text("UPDATE devices SET credentials = :c WHERE id = :i"),
+                {"c": new_blob, "i": row_id},
+            )
+            upgraded += 1
+        if upgraded:
+            logger.warning(
+                "devices.credentials: encrypted %d plaintext row(s) on startup. "
+                "From now on credentials live as Fernet-encrypted blobs; the key "
+                "lives in CREDENTIAL_KEY (env) or .credential_key next to the DB.",
+                upgraded,
+            )
 
 
 def get_db():

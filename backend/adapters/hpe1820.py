@@ -121,6 +121,31 @@ def _encode_portlist(ports: list[int], min_bytes: int) -> bytes:
 
 
 class HPE1820Adapter(SNMPAdapter):
+    REQUIREMENTS = [
+        {
+            "service": "SNMPv2c",
+            "transport": "snmp",
+            "port": 161,
+            "description": "All read operations (inventory, ports, VLANs, FDB)",
+            "required": True,
+        },
+        {
+            "service": "Web UI (HTTP)",
+            "transport": "http",
+            "port": 80,
+            "description": "Form-POST writes for port admin, PoE, VLANs (no CLI on this switch)",
+            "required": True,
+        },
+    ]
+
+    def requirements(self) -> list[dict]:
+        snmp_port = int(self.credentials.get("port") or 161)
+        web_port  = int(self.credentials.get("web_port") or 80)
+        return [
+            {**self.REQUIREMENTS[0], "port": snmp_port},
+            {**self.REQUIREMENTS[1], "port": web_port},
+        ]
+
     def __init__(self, hostname: str, credentials: dict):
         super().__init__(hostname, credentials)
         # Web UI credentials. Fall back to top-level username/password so
@@ -366,7 +391,7 @@ class HPE1820Adapter(SNMPAdapter):
     async def _run_in_session(self, work):
         """Open one web UI session, run the supplied sync callable with the
         httpx Client, log out, and return whatever the callable returned."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         def _do():
             with self._web_session_sync() as client:
                 return work(client)

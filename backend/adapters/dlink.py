@@ -69,6 +69,30 @@ def _read_quiet(channel, quiet_ms: int = 600, timeout: int = 10) -> str:
 
 
 class DLinkAdapter(SNMPAdapter):
+    REQUIREMENTS = [
+        {
+            "service": "SNMPv2c",
+            "transport": "snmp",
+            "port": 161,
+            "description": "Inventory, port stats, MAC table, ARP",
+            "required": True,
+        },
+        {
+            "service": "SSH",
+            "transport": "tcp",
+            "port": 22,
+            "description": "PoE status, VLAN config, DHCP/manual IP detection (CLI-only on DGS-3120 R4.x)",
+            "required": True,
+        },
+    ]
+
+    def requirements(self) -> list[dict]:
+        snmp_port = int(self.credentials.get("port") or 161)
+        ssh_port  = int(self.credentials.get("ssh_port") or 22)
+        return [
+            {**self.REQUIREMENTS[0], "port": snmp_port},
+            {**self.REQUIREMENTS[1], "port": ssh_port},
+        ]
 
     def get_supported_cache_keys(self) -> list[str]:
         return ["status", "ports", "poe", "vlans", "connected"]
@@ -197,6 +221,12 @@ class DLinkAdapter(SNMPAdapter):
         consumption_mw = 0
         lines = output.split("\n")
         i = 0
+        # If SSH succeeded but the response carries no port lines, the firmware
+        # may have changed `show poe` formatting or PoE itself is disabled on
+        # the chassis. Either way the user sees "PoE info gone"; log a snippet
+        # so we can distinguish format-drift from a turned-off feature without
+        # a packet capture.
+        _initial_line_count = len(lines)
         while i < len(lines):
             m1 = _POE_LINE1_RE.search(lines[i])
             if not m1 or i + 2 >= len(lines):
@@ -231,6 +261,14 @@ class DLinkAdapter(SNMPAdapter):
             })
             consumption_mw += power_mw
             i += 3
+
+        if not ports and _initial_line_count > 0:
+            snippet = output.strip().splitlines()[:6]
+            logger.warning(
+                "DLink %s: `show poe ports 1-48` parsed zero ports from %d lines of "
+                "CLI output (firmware format change or PoE disabled?). First lines: %r",
+                self.hostname, _initial_line_count, snippet,
+            )
 
         return {
             "ports":            ports,
@@ -569,7 +607,7 @@ class DLinkAdapter(SNMPAdapter):
         password = self.credentials.get("ssh_password", "")
         ssh_port = int(self.credentials.get("ssh_port", 22))
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         def _do() -> list[dict]:
             import socket as _socket

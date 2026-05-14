@@ -14,6 +14,42 @@ from .base import BaseAdapter
 
 
 class RedfishAdapter(BaseAdapter):
+    # One adapter class serves redfish / ilo / idrac / ibmc. The base requirement
+    # is HTTPS on the configured port. Huawei iBMC gets an extra SNMPv3 hint
+    # added at runtime — see `requirements()` — because Redfish 1.0 there
+    # doesn't expose CPU model / DIMM type / PCIe inventory and we backfill
+    # via the Huawei MIB.
+    REQUIREMENTS = [
+        {
+            "service": "HTTPS (Redfish)",
+            "transport": "redfish",
+            "port": 443,
+            "description": "BMC Redfish service root + Systems/Chassis subtrees",
+            "required": True,
+        },
+    ]
+
+    # iBMC-specific extension surfaced when the user picks the `ibmc` adapter
+    # type. We can't introspect manufacturer from credentials alone, so the
+    # endpoint layer pre-injects this when adapter_type=='ibmc'.
+    IBMC_EXTRA_REQUIREMENTS = [
+        {
+            "service": "SNMPv3",
+            "transport": "snmpv3",
+            "port": 161,
+            "description": "Backfills CPU model, DIMM type, PCIe inventory not exposed via Redfish 1.0.2",
+            "required": False,
+        },
+    ]
+
+    def requirements(self) -> list[dict]:
+        port = int(self.credentials.get("port") or 443)
+        out = [{**r, "port": port} for r in self.REQUIREMENTS]
+        if self.adapter_type == "ibmc":
+            snmp_port = int(self.credentials.get("snmp_port") or 161)
+            out += [{**r, "port": snmp_port} for r in self.IBMC_EXTRA_REQUIREMENTS]
+        return out
+
     def __init__(self, hostname: str, credentials: dict):
         super().__init__(hostname, credentials)
         self.username = credentials.get("username", "admin")
@@ -892,7 +928,8 @@ class RedfishAdapter(BaseAdapter):
                         try:
                             data = r.json()
                             csrf_token = data.get("csrfToken") or data.get("token")
-                        except: pass
+                        except Exception as exc:
+                            logger.debug("iBMC modern login: CSRF JSON parse failed: %s", exc)
 
                     if csrf_token:
                         logger.info("iBMC Login successful via modern API")

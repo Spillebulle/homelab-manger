@@ -23,4 +23,11 @@ def get_adapter(adapter_type: str, hostname: str, credentials: dict) -> BaseAdap
     cls = ADAPTER_MAP.get(adapter_type)
     if not cls:
         raise ValueError(f"Unknown adapter type: {adapter_type!r}")
-    return cls(hostname, credentials)
+    instance = cls(hostname, credentials)
+    # Tag the instance with the type key it was looked up under. RedfishAdapter
+    # serves four types (redfish/ilo/idrac/ibmc); requirements() needs to
+    # branch on this so iBMC surfaces its SNMPv3 dependency. Set on the
+    # instance rather than the class so two devices with different types
+    # (rare, but allowed) don't fight.
+    instance.adapter_type = adapter_type
+    return instance

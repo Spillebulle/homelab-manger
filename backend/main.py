@@ -17,7 +17,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from . import __version__ as APP_VERSION
 from .database import get_db, init_db
 from .models import Device, DeviceCache, AuthUser
-from .schemas import DeviceCreate, DeviceUpdate, LoginRequest, ChangePasswordRequest
+from .schemas import DeviceCreate, DeviceUpdate, LoginRequest, ChangePasswordRequest, PreflightRequest
 from . import poller
 from .adapters import get_adapter
 from .adapters import oui as oui_db
@@ -37,6 +37,11 @@ logger = logging.getLogger(__name__)
 # ── Connection Manager for WebSockets ────────────────────────────────────────
 
 class ConnectionManager:
+    # Per-connection send timeout. If a client's socket buffer is wedged we
+    # don't want a poll-cycle broadcast to hang the event loop waiting on it —
+    # drop the slow client instead.
+    _SEND_TIMEOUT_SECONDS = 5.0
+
     def __init__(self):
         self.active_connections: list[WebSocket] = []
 
@@ -49,10 +54,21 @@ class ConnectionManager:
             self.active_connections.remove(websocket)
 
     async def broadcast_json(self, message: dict):
+        # Snapshot upfront so disconnect() mutating self.active_connections
+        # mid-iteration can't skip a connection. asyncio.wait_for caps the
+        # per-send budget so a single slow client doesn't stall the broadcast.
         for connection in list(self.active_connections):
             try:
-                await connection.send_json(message)
-            except Exception:
+                await asyncio.wait_for(
+                    connection.send_json(message),
+                    timeout=self._SEND_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("WebSocket send timed out after %.1fs — dropping client",
+                               self._SEND_TIMEOUT_SECONDS)
+                self.disconnect(connection)
+            except Exception as exc:
+                logger.debug("WebSocket send failed (%s) — dropping client", exc)
                 self.disconnect(connection)
 
 manager = ConnectionManager()
@@ -206,9 +222,10 @@ def list_devices(db: Session = Depends(get_db)):
 
 @api.post("/devices", status_code=201)
 def create_device(body: DeviceCreate, db: Session = Depends(get_db)):
+    # EncryptedJSON column accepts a dict directly — encryption happens on flush.
     dev = Device(
         name=body.name, hostname=body.hostname, device_type=body.device_type,
-        adapter_type=body.adapter_type, credentials=json.dumps(body.credentials),
+        adapter_type=body.adapter_type, credentials=body.credentials,
         enabled=body.enabled, notes=body.notes,
     )
     db.add(dev)
@@ -217,12 +234,40 @@ def create_device(body: DeviceCreate, db: Session = Depends(get_db)):
     return {"id": dev.id}
 
 
+# Secret credential keys: when the edit modal re-submits these as empty
+# strings, we keep the existing decrypted value rather than overwriting it
+# with "". That's what lets the user edit a non-secret field (hostname, port,
+# community) without re-typing every password. Non-secret keys overwrite
+# unconditionally so legitimate clearing still works.
+_SECRET_CRED_KEYS = {
+    "password",
+    "ssh_password",
+    "web_password",
+    "snmp_auth_pass",
+    "snmp_priv_pass",
+}
+
+
+def _merge_credentials_for_update(existing: dict | None, incoming: dict) -> dict:
+    """Right-bias merge with a sentinel for masked secrets. The frontend
+    sends `""` (or just omits the key) for password fields the user didn't
+    touch; we treat both as "keep existing". Any other value — including a
+    non-empty string the user just typed — overwrites."""
+    merged = dict(existing or {})
+    for k, v in (incoming or {}).items():
+        if k in _SECRET_CRED_KEYS and (v is None or v == ""):
+            continue  # keep existing
+        merged[k] = v
+    return merged
+
+
 @api.put("/devices/{device_id}")
 def update_device(device_id: int, body: DeviceUpdate, db: Session = Depends(get_db)):
     d = _device_or_404(device_id, db)
     for field, value in body.model_dump(exclude_unset=True).items():
         if field == "credentials":
-            setattr(d, field, json.dumps(value))
+            # Merge so masked password fields don't clobber the stored value.
+            setattr(d, field, _merge_credentials_for_update(d.credentials, value))
         else:
             setattr(d, field, value)
     db.commit()
@@ -249,21 +294,154 @@ def get_cache(device_id: int, db: Session = Depends(get_db)):
     return _cache_map(device_id, db)
 
 
+@api.get("/devices/{device_id}/credentials")
+def get_device_credentials(device_id: int, db: Session = Depends(get_db)):
+    """Return the device's credentials with secret fields blanked out, so the
+    edit modal can pre-populate non-secret values (community, ports, usernames)
+    without exposing the actual secrets to the browser. The PUT handler treats
+    empty values for `_SECRET_CRED_KEYS` as "keep existing" — so the user can
+    save the edit modal without re-typing every password.
+
+    The list endpoint deliberately omits credentials entirely; this is the
+    only path that surfaces them, which keeps the attack surface for any
+    XSS / CSRF on the read side small."""
+    d = _device_or_404(device_id, db)
+    creds = dict(d.credentials or {})
+    for k in list(creds.keys()):
+        if k in _SECRET_CRED_KEYS:
+            # Empty string (not the original value) so the frontend can render
+            # a "(unchanged — leave blank to keep)" placeholder without ever
+            # holding the secret in DOM.
+            creds[k] = ""
+    return creds
+
+
+# ── Preflight (service requirements + active connectivity test) ──────────────
+#
+# Two flavours, both consumed by the add-device modal:
+#   GET  /api/adapter-requirements        → static metadata keyed by adapter
+#                                            type. Drives the "?" tooltip.
+#   POST /api/devices/preflight           → active per-service check. Drives
+#                                            the "Test connection" button and
+#                                            the post-save warning toast.
+# Preflight tests are best-effort: a fail here doesn't block creating the
+# device (the user might be testing from a network that can't reach SSH but
+# the polling host can — homelab scenarios are weird).
+
+
+@api.get("/adapter-requirements")
+def adapter_requirements():
+    """Returns {adapter_type: [{service, transport, port, description, required}]}
+    keyed by every entry in ADAPTER_MAP. Used by the SPA's tooltip; the port
+    value uses the adapter's *default* (no credentials applied) because we
+    don't have a device context here."""
+    from .adapters import ADAPTER_MAP
+    out: dict[str, list[dict]] = {}
+    for atype in ADAPTER_MAP:
+        try:
+            inst = get_adapter(atype, "preflight.local", {})
+        except Exception as exc:
+            logger.warning("Cannot build adapter %s for requirements lookup: %s", atype, exc)
+            continue
+        out[atype] = inst.requirements()
+    return out
+
+
+def _summarise_preflight(results: list[dict]) -> str:
+    """Roll up per-service results into a headline outcome the SPA can render
+    in one glance. None/skipped don't count against the rollup since UDP
+    probes are intentionally indeterminate."""
+    required_fail = any(r.get("required") and r.get("ok") is False for r in results)
+    optional_fail = any((not r.get("required")) and r.get("ok") is False for r in results)
+    if required_fail:
+        return "fail"
+    if optional_fail:
+        return "partial"
+    return "ok"
+
+
+async def _run_preflight(adapter) -> dict:
+    try:
+        results = await adapter.preflight()
+    finally:
+        try:
+            await adapter.close()
+        except Exception as exc:
+            logger.debug("adapter.close() after preflight failed: %s", exc)
+    return {"status": _summarise_preflight(results), "results": results}
+
+
+@api.post("/devices/preflight")
+async def preflight_device(body: PreflightRequest, db: Session = Depends(get_db)):
+    """Run each requirement's active test against a *prospective* device
+    (called by the modal's Test button before the device exists). Returns
+    {status, results} where results is the per-service list.
+
+    If `device_id` is supplied, merge the incoming form credentials with the
+    device's stored decrypted credentials using the same rule the PUT
+    handler applies: empty values in secret fields fall through to the
+    existing stored secret. This lets "Test connection" work in the edit
+    modal without re-typing masked passwords."""
+    creds = dict(body.credentials or {})
+    if body.device_id is not None:
+        existing = db.query(Device).filter(Device.id == body.device_id).first()
+        if existing is not None:
+            creds = _merge_credentials_for_update(existing.credentials, creds)
+    try:
+        adapter = get_adapter(body.adapter_type, body.hostname, creds)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return await _run_preflight(adapter)
+
+
+@api.post("/devices/{device_id}/preflight")
+async def preflight_existing_device(device_id: int, db: Session = Depends(get_db)):
+    """Preflight an *already-saved* device using its decrypted stored
+    credentials. The auto-preflight after Save/Edit calls this instead of
+    /devices/preflight so masked password fields in the edit modal don't
+    produce false-negative results — the form-state path can only see
+    whatever the user typed, not the secrets we kept hidden."""
+    d = _device_or_404(device_id, db)
+    creds = d.credentials or {}
+    try:
+        adapter = get_adapter(d.adapter_type, d.hostname, creds)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return await _run_preflight(adapter)
+
+
 @api.post("/devices/{device_id}/action")
 async def device_action(device_id: int, action: dict, db: Session = Depends(get_db)):
     d = _device_or_404(device_id, db)
-    creds = json.loads(d.credentials) if d.credentials else {}
+    creds = d.credentials or {}
     adapter = get_adapter(d.adapter_type, d.hostname, creds)
-    return await adapter.execute_action(action)
+    try:
+        return await adapter.execute_action(action)
+    finally:
+        # close() releases BMC session slots (CIMC has a 4-slot cap; iBMC
+        # rejects new logins past ~4 active sessions). Ad-hoc actions used
+        # to leak one slot per click; the poll path already cleans up.
+        try:
+            await adapter.close()
+        except Exception as exc:
+            logger.warning("adapter.close() after action on device %d failed: %s",
+                           device_id, exc)
 
 
 @api.post("/devices/{device_id}/port/{port_id}/action")
 async def port_action(device_id: int, port_id: str, action: dict, db: Session = Depends(get_db)):
     d = _device_or_404(device_id, db)
-    creds = json.loads(d.credentials) if d.credentials else {}
+    creds = d.credentials or {}
     adapter = get_adapter(d.adapter_type, d.hostname, creds)
     action["port_id"] = port_id
-    return await adapter.execute_action(action)
+    try:
+        return await adapter.execute_action(action)
+    finally:
+        try:
+            await adapter.close()
+        except Exception as exc:
+            logger.warning("adapter.close() after port action on device %d failed: %s",
+                           device_id, exc)
 
 
 @api.get("/devices/{device_id}/kvm.jnlp")
@@ -285,7 +463,7 @@ async def download_kvm_jnlp(device_id: int, request: Request, db: Session = Depe
     if d.adapter_type not in ["cimc", "cimc_redfish", "ibmc"]:
         raise HTTPException(status_code=400, detail=f"KVM JNLP not supported for {d.adapter_type}")
 
-    creds = json.loads(d.credentials) if d.credentials else {}
+    creds = d.credentials or {}
     adapter = get_adapter(d.adapter_type, d.hostname, creds)
 
     result = await adapter.execute_action({"type": "kvm_launch"})
@@ -395,7 +573,7 @@ async def cimc_kvm_proxy(device_id: int, jar_name: str, t: str, request: Request
     if "/" in jar_name or "\\" in jar_name or jar_name.startswith("."):
         raise HTTPException(status_code=400, detail="Invalid path")
 
-    creds = json.loads(d.credentials) if d.credentials else {}
+    creds = d.credentials or {}
     port = int(creds.get("port", 443))
     target = f"https://{d.hostname}:{port}/software/{jar_name}"
 
@@ -420,7 +598,14 @@ async def cimc_kvm_proxy(device_id: int, jar_name: str, t: str, request: Request
         async with httpx.AsyncClient(verify=ctx, timeout=60) as c:
             r = await c.get(target)
     except httpx.HTTPError as e:
+        logger.warning("CIMC KVM proxy GET %s failed: %s", target, e)
         raise HTTPException(status_code=502, detail=f"BMC fetch failed: {e}")
+
+    if r.status_code >= 400:
+        logger.warning(
+            "CIMC KVM proxy: %s returned HTTP %d for jar %s (token=%s)",
+            d.hostname, r.status_code, jar_name, t[:8],
+        )
 
     # Strip hop-by-hop headers and the Server header so we don't leak
     # the BMC's `Server: Monkey` banner.

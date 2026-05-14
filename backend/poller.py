@@ -46,7 +46,8 @@ async def poll_device(device_id: int, on_update=None):
         if not device or not device.enabled:
             return
 
-        credentials = json.loads(device.credentials) if device.credentials else {}
+        # device.credentials is a dict (or None) via the EncryptedJSON column.
+        credentials = device.credentials or {}
         adapter = get_adapter(device.adapter_type, device.hostname, credentials)
 
         try:
@@ -93,7 +94,17 @@ async def poll_loop(on_update=None):
             db.close()
 
         if ids:
-            # Pass the callback to each individual device poll
-            await asyncio.gather(*[poll_device(i, on_update) for i in ids], return_exceptions=True)
+            # Pass the callback to each individual device poll. `poll_device`
+            # has its own try/except so the only exceptions that surface here
+            # are catastrophic ones (cancellation, OOM, programmer error in
+            # poll_device itself). Don't let those vanish silently — log them
+            # tagged with the device_id so the next poll cycle still runs.
+            results = await asyncio.gather(
+                *[poll_device(i, on_update) for i in ids], return_exceptions=True,
+            )
+            for device_id, exc in zip(ids, results):
+                if isinstance(exc, Exception):
+                    logger.error("poll_device %d raised through gather: %s: %s",
+                                 device_id, type(exc).__name__, exc)
 
         await asyncio.sleep(POLL_INTERVAL)

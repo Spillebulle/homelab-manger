@@ -143,9 +143,8 @@
                   <span class="text-xs text-gray-500" x-text="d.last_seen ? relTime(d.last_seen) : 'never'"></span>
                 </div>
                 <div x-show="d.status_error" class="mt-2 text-xs text-red-400 truncate" x-text="d.status_error"></div>
-                <div x-show="d.status && d.status.sysDescr" class="mt-2 text-xs text-gray-400 truncate" x-text="d.status && d.status.sysDescr"></div>
-                <div x-show="d.status && d.status.model" class="mt-2 text-xs text-gray-400 truncate"
-                     x-text="d.status && (d.status.model + (d.status.serial ? ' · ' + d.status.serial : ''))"></div>
+                <div x-show="deviceCardSubtitle(d)" class="mt-2 text-xs text-gray-400 truncate"
+                     x-text="deviceCardSubtitle(d)"></div>
               </div>
             </template>
             <div x-show="devices.length === 0" class="col-span-full text-center text-gray-500 py-16">
@@ -1085,7 +1084,8 @@
           </div>
           <div>
             <label class="label">Hostname / IP</label>
-            <input x-model="form.hostname" class="input w-full" placeholder="192.168.1.1">
+            <input x-model="form.hostname" @input="onPreflightInputChanged()"
+                   class="input w-full" placeholder="192.168.1.1">
           </div>
         </div>
         <div class="grid grid-cols-2 gap-4">
@@ -1099,15 +1099,122 @@
               <option value="ups">UPS</option>
             </select>
           </div>
-          <div>
-            <label class="label">Adapter</label>
-            <select x-model="form.adapter_type" class="input w-full">
+          <div class="relative">
+            <label class="label flex items-center gap-2">
+              <span>Adapter</span>
+              <!-- Info pill — popover lists services this adapter needs to
+                   reach. Keeps the user from playing whack-a-mole with
+                   firewalls after a device shows up as offline. -->
+              <button type="button"
+                      @click.stop="showAdapterInfo = !showAdapterInfo"
+                      :title="showAdapterInfo ? 'Hide service requirements' : 'Show service requirements'"
+                      class="w-4 h-4 inline-flex items-center justify-center rounded-full
+                             bg-gray-700 hover:bg-blue-600 text-gray-200 text-[10px] leading-none
+                             transition-colors">
+                <i class="fa-solid fa-question"></i>
+              </button>
+            </label>
+            <select x-model="form.adapter_type"
+                    @change="onPreflightInputChanged()"
+                    class="input w-full">
               <template x-for="opt in adapterOptionsForType(form.device_type)" :key="opt.value">
                 <option :value="opt.value" x-text="opt.label"></option>
               </template>
             </select>
+
+            <!-- Service-requirements popover. Click-away handled by the
+                 @click.away on the panel itself. -->
+            <div x-show="showAdapterInfo"
+                 x-transition.opacity
+                 @click.away="showAdapterInfo = false"
+                 class="absolute right-0 top-full mt-2 z-30 w-96 bg-card border border-border
+                        rounded-lg shadow-2xl p-4 text-xs">
+              <div class="flex items-center justify-between mb-2">
+                <div class="text-gray-300 font-semibold">Required services</div>
+                <button @click="showAdapterInfo = false" class="text-gray-500 hover:text-gray-200">
+                  <i class="fa-solid fa-xmark"></i>
+                </button>
+              </div>
+              <template x-if="!adapterRequirements[form.adapter_type]?.length">
+                <div class="text-gray-500 italic">No metadata for this adapter.</div>
+              </template>
+              <ul class="space-y-2">
+                <template x-for="req in (adapterRequirements[form.adapter_type] || [])" :key="req.service">
+                  <li class="border-l-2 pl-3"
+                      :class="req.required ? 'border-blue-500' : 'border-gray-600'">
+                    <div class="flex items-center gap-2">
+                      <span class="font-mono text-gray-200" x-text="req.service"></span>
+                      <span class="text-gray-500" x-text="'/' + (req.transport || '?')"></span>
+                      <span class="text-gray-400 font-mono" x-text="':' + req.port"></span>
+                      <span x-show="!req.required"
+                            class="ml-auto text-[10px] uppercase text-amber-300 tracking-wide">optional</span>
+                    </div>
+                    <div class="text-gray-500 mt-0.5" x-text="req.description"></div>
+                  </li>
+                </template>
+              </ul>
+              <div class="text-gray-600 text-[10px] mt-3 leading-snug">
+                Required services must be reachable from the HomeLab-Manger host. Optional
+                services degrade gracefully (the adapter falls back away from them).
+              </div>
+            </div>
           </div>
         </div>
+
+        <!-- Preflight results — only shown after the user clicks Test
+             connection. Each row uses the same colour scheme as the status
+             dots on the device list so the meaning is consistent. -->
+        <template x-if="preflight.status">
+          <div class="border rounded-lg p-3"
+               :class="{
+                 'border-blue-500/40 bg-blue-500/5':   preflight.status === 'running',
+                 'border-green-500/40 bg-green-500/5': preflight.status === 'ok',
+                 'border-amber-500/40 bg-amber-500/5': preflight.status === 'partial',
+                 'border-red-500/40 bg-red-500/5':     preflight.status === 'fail',
+               }">
+            <div class="flex items-center gap-2 text-sm font-semibold mb-2">
+              <template x-if="preflight.status === 'running'">
+                <span class="text-blue-300">
+                  <i class="fa-solid fa-circle-notch fa-spin mr-1"></i>Testing connectivity…
+                </span>
+              </template>
+              <template x-if="preflight.status === 'ok'">
+                <span class="text-green-300">
+                  <i class="fa-solid fa-check-circle mr-1"></i>All required services reachable
+                </span>
+              </template>
+              <template x-if="preflight.status === 'partial'">
+                <span class="text-amber-300">
+                  <i class="fa-solid fa-triangle-exclamation mr-1"></i>Required services OK, optional ones unreachable
+                </span>
+              </template>
+              <template x-if="preflight.status === 'fail'">
+                <span class="text-red-300">
+                  <i class="fa-solid fa-circle-xmark mr-1"></i>One or more required services unreachable
+                </span>
+              </template>
+            </div>
+            <ul class="space-y-1.5 text-xs">
+              <template x-for="r in preflight.results" :key="r.service">
+                <li class="flex items-start gap-2">
+                  <span class="w-2 h-2 mt-1.5 rounded-full shrink-0"
+                        :class="{
+                          'bg-green-500':  r.ok === true,
+                          'bg-red-500':    r.ok === false && r.required,
+                          'bg-amber-500':  r.ok === false && !r.required,
+                          'bg-gray-500':   r.skipped || r.ok === null,
+                        }"></span>
+                  <div class="flex-1">
+                    <span class="font-mono text-gray-200" x-text="r.service"></span>
+                    <span class="text-gray-500" x-text="':' + r.port"></span>
+                    <span x-show="!r.required" class="text-[10px] uppercase ml-1 text-amber-300">opt</span>
+                    <div class="text-gray-400" x-text="r.detail"></div>
+                  </div>
+                </li>
+              </template>
+            </ul>
+          </div>
+        </template>
 
         <!-- SNMP / D-Link / HPE 1820 credentials -->
         <template x-if="['snmp','dlink','hpe1820'].includes(form.adapter_type)">
@@ -1131,7 +1238,8 @@
                 </div>
                 <div>
                   <label class="label">SSH Password</label>
-                  <input x-model="form.credentials.ssh_password" type="password" class="input w-full">
+                  <input x-model="form.credentials.ssh_password" type="password" class="input w-full"
+                         :placeholder="editingDevice ? '••••••••' : ''">
                 </div>
                 <div>
                   <label class="label">SSH Port</label>
@@ -1147,7 +1255,8 @@
                 </div>
                 <div>
                   <label class="label">Web Password</label>
-                  <input x-model="form.credentials.web_password" type="password" class="input w-full">
+                  <input x-model="form.credentials.web_password" type="password" class="input w-full"
+                         :placeholder="editingDevice ? '••••••••' : ''">
                 </div>
                 <div>
                   <label class="label">Web Port</label>
@@ -1169,7 +1278,8 @@
               </div>
               <div>
                 <label class="label">Password</label>
-                <input x-model="form.credentials.password" type="password" class="input w-full">
+                <input x-model="form.credentials.password" type="password" class="input w-full"
+                       :placeholder="editingDevice ? '••••••••' : ''">
               </div>
             </div>
             <div class="grid grid-cols-2 gap-3">
@@ -1198,6 +1308,17 @@
           <i class="fa-solid fa-trash mr-1"></i> Delete
         </button>
         <div class="flex gap-2 ml-auto">
+          <button @click="runPreflight()"
+                  :disabled="preflight.status === 'running' || !form.hostname"
+                  class="btn-secondary disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Probe each service this adapter relies on without saving the device">
+            <template x-if="preflight.status === 'running'">
+              <span><i class="fa-solid fa-circle-notch fa-spin mr-1"></i>Testing…</span>
+            </template>
+            <template x-if="preflight.status !== 'running'">
+              <span><i class="fa-solid fa-plug-circle-check mr-1"></i>Test connection</span>
+            </template>
+          </button>
           <button @click="showDeviceModal = false" class="btn-secondary">Cancel</button>
           <button @click="saveDevice()" class="btn-primary">
             <span x-text="editingDevice ? 'Save' : 'Add'"></span>
@@ -1320,8 +1441,11 @@
   <!-- ── Toast ─────────────────────────────────────────────────────────────── -->
   <div x-show="toast" x-transition
        :class="[pendingChangeCount > 0 ? 'bottom-24' : 'bottom-6',
-                toast?.type === 'error' ? 'bg-red-600 text-white' : 'bg-green-600 text-white']"
-       class="fixed right-6 z-50 px-4 py-3 rounded-lg shadow-lg text-sm font-medium"
+                toast?.type === 'error'   ? 'bg-red-600 text-white' :
+                toast?.type === 'warning' ? 'bg-amber-600 text-white' :
+                                            'bg-green-600 text-white']"
+       class="fixed right-6 z-50 px-4 py-3 rounded-lg shadow-lg text-sm font-medium
+              max-w-md whitespace-pre-line"
        x-text="toast?.msg">
   </div>
 
@@ -1357,6 +1481,17 @@
       appInfo:         { version: '', github_url: '', dockerhub_url: '' },
       form: {},
 
+      // ── Add-device modal: requirements tooltip + active preflight ─────────
+      // adapterRequirements is the static metadata served by
+      // /api/adapter-requirements. Loaded once at app init.
+      adapterRequirements: {},
+      // Popover toggle for the "?" button next to the adapter dropdown.
+      showAdapterInfo: false,
+      // Active-test state populated by runPreflight(). status is one of
+      // null | 'running' | 'ok' | 'partial' | 'fail'. results is the
+      // per-service array returned by /api/devices/preflight.
+      preflight: { status: null, results: [], runningSince: null },
+
       // ── lifecycle ────────────────────────────────────────────────────────
       async init() {
         // Redirect to /login on any 401 from the API. Single global hook so
@@ -1371,9 +1506,75 @@
         };
         await this.loadIdentity();
         this.loadAppInfo();
+        this.loadAdapterRequirements();
         await this.loadDevices();
         this.connectWebSocket();
         if (this.selectedId) await this.loadDetail(this.selectedId);
+      },
+
+      async loadAdapterRequirements() {
+        try {
+          const r = await fetch('/api/adapter-requirements');
+          if (r.ok) this.adapterRequirements = await r.json();
+        } catch (e) { /* tooltip just hides if this fails */ }
+      },
+
+      // Result of the most recent /api/devices/preflight call, formatted for
+      // a one-line toast. "SNMPv2c OK · SSH failed (TCP connect refused)".
+      preflightToastMessage(payload) {
+        const lines = (payload.results || []).map(r => {
+          if (r.skipped)        return `${r.service}: skipped`;
+          if (r.ok === true)    return `${r.service}: OK`;
+          if (r.ok === false)   return `${r.service}: ${r.detail || 'failed'}`;
+          return `${r.service}: ?`;
+        });
+        return lines.join(' · ');
+      },
+
+      async runPreflight() {
+        this.preflight = { status: 'running', results: [], runningSince: Date.now() };
+        try {
+          const r = await fetch('/api/devices/preflight', {
+            method:  'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+              hostname:     this.form.hostname,
+              adapter_type: this.form.adapter_type,
+              credentials:  this.form.credentials,
+              // When editing, hand the backend the device id so it can merge
+              // the form's masked secret fields with the stored credentials.
+              // Otherwise secret probes (SNMPv3, CIMC XMLAPI, Redfish basic-
+              // auth) fail with "no creds" because the form holds blanked
+              // values for password / snmp_auth_pass / snmp_priv_pass / etc.
+              device_id:    this.editingDevice?.id ?? null,
+            }),
+          });
+          if (!r.ok) {
+            const data = await r.json().catch(() => ({}));
+            this.preflight.status = 'fail';
+            this.preflight.results = [{
+              service: 'preflight', ok: false,
+              detail: data.detail || `HTTP ${r.status}`,
+              required: true,
+            }];
+            return;
+          }
+          const data = await r.json();
+          this.preflight.status  = data.status;
+          this.preflight.results = data.results || [];
+        } catch (e) {
+          this.preflight.status = 'fail';
+          this.preflight.results = [{
+            service: 'preflight', ok: false,
+            detail: String(e), required: true,
+          }];
+        }
+      },
+
+      // Reset preflight state when the user changes adapter/hostname so the
+      // displayed results don't get out of sync with the form they describe.
+      onPreflightInputChanged() {
+        this.preflight = { status: null, results: [], runningSince: null };
       },
 
       async loadAppInfo() {
@@ -1775,14 +1976,28 @@
       // Check against the raw catalog, not adapterOptionsForType — the
       // latter pads in the current value as a "(current)" fallback for
       // edit-mode legacy data, which would suppress the snap.
+      //
+      // Guarded by `_initializingForm`: when openAddModal/openEditModal
+      // assigns a new form object, Alpine reactivity can fire change events
+      // on the device_type select before the new form.adapter_type has fully
+      // synced (the adapter select's `<template x-for>` may not have
+      // re-rendered options yet, which makes Alpine briefly read the old
+      // model value). Without this guard, opening Edit for an `idrac` or
+      // `redfish` server while the previous modal session was a `switch`
+      // silently snaps the saved adapter to `cimc` — the first option in
+      // the new device_type's catalog.
       onDeviceTypeChange() {
+        if (this._initializingForm) return;
         const opts = this.adapterCatalog[this.form.device_type] || this.adapterCatalog.switch;
         if (!opts.some(o => o.value === this.form.adapter_type)) {
           this.form.adapter_type = opts[0]?.value || 'snmp';
         }
       },
 
+      _initializingForm: false,
+
       openAddModal() {
+        this._initializingForm = true;
         this.editingDevice = null;
         this.form = {
           name: '', hostname: '', device_type: 'switch', adapter_type: 'snmp',
@@ -1795,20 +2010,65 @@
           },
           notes: '',
         };
+        this.onPreflightInputChanged();
+        this.showAdapterInfo = false;
         this.showDeviceModal = true;
+        // Clear the guard after Alpine has processed the reactive cascade
+        // triggered by the form assignment above. Two queued microtasks is
+        // belt-and-braces: one to flush Alpine's queued effects, one to
+        // ensure any deferred DOM event handlers also see the guard.
+        queueMicrotask(() => queueMicrotask(() => { this._initializingForm = false; }));
       },
 
-      openEditModal(d) {
-        this.editingDevice = d;
-        this.form = {
-          name:         d.name,
-          hostname:     d.hostname,
-          device_type:  d.device_type,
-          adapter_type: d.adapter_type,
-          credentials:  { ...(d.credentials || {}) },
-          notes:        d.notes || '',
-        };
-        this.showDeviceModal = true;
+      async openEditModal(d) {
+        this._initializingForm = true;
+        try {
+          this.editingDevice = d;
+          // Credentials aren't on the device list response — they live behind
+          // /api/devices/{id}/credentials so the browser only sees them when
+          // explicitly asked. Secrets come back blanked; non-secrets come
+          // back as-is so the user can edit a community / port without
+          // re-typing every password. The PUT handler merges blanks back
+          // with existing.
+          let creds = {};
+          try {
+            const r = await fetch(`/api/devices/${d.id}/credentials`);
+            if (r.ok) creds = await r.json();
+          } catch (e) { /* fall back to empty; user just retypes everything */ }
+          // Two-stage form assignment to dodge the Alpine x-model + x-for
+          // race. The adapter <select> has its options rendered by a
+          // <template x-for> that depends on form.device_type. When form is
+          // replaced wholesale, x-model on the select can resolve against
+          // the PREVIOUS option set (from the prior modal session) before
+          // x-for has emitted the new options — so the saved adapter (e.g.
+          // 'ibmc') silently maps to the first option in the previous DOM
+          // (e.g. 'cimc') in the rendered UI. The model is correct, but the
+          // visual lies. Fix: assign device_type + creds first with adapter
+          // blank, await one tick so x-for renders the new option list,
+          // THEN set adapter_type so x-model finds a real <option> to mark
+          // selected.
+          this.form = {
+            name:         d.name,
+            hostname:     d.hostname,
+            device_type:  d.device_type,
+            adapter_type: '',
+            credentials:  creds,
+            notes:        d.notes || '',
+          };
+          this.onPreflightInputChanged();
+          this.showAdapterInfo = false;
+          this.showDeviceModal = true;
+          // Wait for the adapter <option> tags for the new device_type to
+          // hit the DOM, then assign the real adapter. x-model now has a
+          // matching <option> and sets selectedIndex correctly.
+          await this.$nextTick();
+          this.form.adapter_type = d.adapter_type;
+        } finally {
+          // Same two-microtask delay as openAddModal — Alpine needs a chance
+          // to settle the @change event that x-model fires when device_type
+          // moves between option sets before we re-enable the snap.
+          queueMicrotask(() => queueMicrotask(() => { this._initializingForm = false; }));
+        }
       },
 
       async saveDevice() {
@@ -1820,18 +2080,68 @@
           credentials:  this.form.credentials,
           notes:        this.form.notes,
         });
+        let savedDeviceId = this.editingDevice?.id;
         if (this.editingDevice) {
           await fetch(`/api/devices/${this.editingDevice.id}`, {
             method: 'PUT', headers: {'Content-Type': 'application/json'}, body,
           });
         } else {
-          await fetch('/api/devices', {
+          const r = await fetch('/api/devices', {
             method: 'POST', headers: {'Content-Type': 'application/json'}, body,
           });
+          // create_device returns {id: <new-id>}; grab it so the post-save
+          // preflight can query the just-stored device server-side.
+          try {
+            const data = await r.json();
+            savedDeviceId = data?.id ?? savedDeviceId;
+          } catch (e) { /* preflight just skips if id is undefined */ }
         }
+        const wasEdit = !!this.editingDevice;
+        const deviceName = this.form.name;
         this.showDeviceModal = false;
         await this.loadDevices();
-        this.showToast(this.editingDevice ? 'Device updated' : 'Device added');
+        this.showToast(wasEdit ? 'Device updated' : 'Device added');
+        // Fire-and-forget post-save preflight. We use the per-device
+        // endpoint so the test runs against the *stored* (decrypted)
+        // credentials — not the form's, which on edit have password fields
+        // blanked out and would produce misleading false negatives.
+        if (savedDeviceId) {
+          this._runPostSavePreflight(savedDeviceId, deviceName);
+        }
+      },
+
+      async _runPostSavePreflight(deviceId, deviceName) {
+        let data;
+        try {
+          const r = await fetch(`/api/devices/${deviceId}/preflight`, {
+            method:  'POST',
+            headers: {'Content-Type': 'application/json'},
+          });
+          if (!r.ok) return;
+          data = await r.json();
+        } catch (e) { return; }
+
+        if (data.status === 'ok') return;
+
+        // Build a one-line summary highlighting the failures the user needs
+        // to act on. We deliberately don't toast every result — the modal's
+        // inline panel covers that when the user clicks Test.
+        const failed = (data.results || []).filter(r => r.ok === false);
+        if (!failed.length) return;
+        const lines = failed.map(r => {
+          const tag = r.required ? '' : ' (optional)';
+          return `${r.service}${tag}: ${r.detail || 'unreachable'}`;
+        });
+        const headline = data.status === 'fail'
+          ? `${deviceName}: required service unreachable`
+          : `${deviceName}: optional service unreachable`;
+        const type = data.status === 'fail' ? 'error' : 'warning';
+        // Multi-line toast; the existing toast renderer accepts a single
+        // string and renders newlines via whitespace-pre-line on the
+        // container (see toast template). If the user kills the modal
+        // before this resolves, the toast still appears at the bottom
+        // of the page — that's intentional.
+        this.showToast(headline + '\n' + lines.join('\n'), type);
       },
 
       async deleteDevice() {
@@ -1851,8 +2161,15 @@
 
       showToast(msg, type = 'success') {
         this.toast = { msg, type };
-        setTimeout(() => this.toast = null, 3500);
+        // Errors and warnings get a longer dwell — they're typically multi-
+        // line (preflight failures) and the user needs time to read.
+        const dwell = (type === 'success') ? 3500 : 8000;
+        // Cancel any prior timeout so a follow-up toast doesn't get cut
+        // short by the previous one's setTimeout firing late.
+        if (this._toastTimer) clearTimeout(this._toastTimer);
+        this._toastTimer = setTimeout(() => this.toast = null, dwell);
       },
+      _toastTimer: null,
 
       get selectedDevice() {
         return this.devices.find(d => d.id === this.selectedId);
@@ -1910,6 +2227,35 @@
         if (d.status_error)     return 'bg-red-500';
         if (d.status?.online === false) return 'bg-red-500';
         return 'bg-green-400';
+      },
+
+      // Short identifier line shown under each device card on the dashboard.
+      // Two shapes depending on data source:
+      //   - SNMP-style: sysDescr is the raw SNMP system descriptor which
+      //     vendors stuff with OS / kernel / U-Boot / firmware revs after a
+      //     comma. Show just the part before the first comma (the model
+      //     name itself); the rest is noise on a card.
+      //   - BMC / Redfish-style: prefer "Manufacturer Model" so the user
+      //     can tell Dell / HP / Huawei apart at a glance. Falls back to
+      //     just model if the manufacturer isn't reported (legacy CIMC
+      //     XMLAPI doesn't return one). Skip the manufacturer prefix when
+      //     model already starts with it ("HPE ProLiant ..." doesn't need
+      //     "HPE HPE ProLiant ...").
+      // Serial is intentionally NOT shown on the card — it's noise at
+      // glance distance and lives on the detail view instead.
+      deviceCardSubtitle(d) {
+        const s = d.status;
+        if (!s) return '';
+        if (s.sysDescr) {
+          return String(s.sysDescr).split(',')[0].trim();
+        }
+        const mfg = (s.manufacturer || '').trim();
+        const mdl = (s.model || '').trim();
+        if (mfg && mdl) {
+          if (mdl.toLowerCase().startsWith(mfg.toLowerCase())) return mdl;
+          return `${mfg} ${mdl}`;
+        }
+        return mdl || mfg;
       },
 
       // ── port helpers ──────────────────────────────────────────────────────

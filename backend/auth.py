@@ -61,7 +61,12 @@ def get_session_secret() -> str:
 
 
 def bootstrap_admin() -> None:
-    """If no auth user exists, create one from ADMIN_PASSWORD (or 'changeme')."""
+    """If no auth user exists, create one from ADMIN_PASSWORD (or 'changeme').
+
+    A commit failure here would otherwise crash FastAPI's lifespan with an
+    opaque traceback and no auth_users row — the operator then can't even log
+    in to investigate. Roll back, log loud, and let the app start anyway so
+    `/api/auth/login` can return a clean 401 instead of a 500."""
     db: Session = SessionLocal()
     try:
         if db.query(AuthUser).count() > 0:
@@ -69,8 +74,18 @@ def bootstrap_admin() -> None:
         initial = os.environ.get("ADMIN_PASSWORD") or "changeme"
         username = os.environ.get("ADMIN_USERNAME") or DEFAULT_USERNAME
         user = AuthUser(username=username, password_hash=hash_password(initial))
-        db.add(user)
-        db.commit()
+        try:
+            db.add(user)
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            logger.error(
+                "Auth bootstrap FAILED — cannot create admin user %r: %s: %s. "
+                "Login will be impossible until the DB is repaired or "
+                "auth_users is seeded manually.",
+                username, type(exc).__name__, exc,
+            )
+            return
         if initial == "changeme":
             logger.warning(
                 "Auth bootstrap: created default user %r with password 'changeme'. "

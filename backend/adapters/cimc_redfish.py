@@ -55,6 +55,47 @@ class CIMCRedfishAdapter(CIMCAdapter):
     XMLAPI plumbing (login, _resolve_class, the post-poll session reaper)
     and the KVM JNLP flow from the legacy adapter unchanged."""
 
+    REQUIREMENTS = [
+        {
+            "service": "HTTPS (Redfish)",
+            "transport": "redfish",
+            "port": 443,
+            "description": "Status, sensors, power, CPU info — required",
+            "required": True,
+        },
+        {
+            "service": "HTTPS (XMLAPI)",
+            "transport": "xmlapi",
+            "port": 443,
+            "description": "DIMM, storage, network, PCIe (Redfish 1.0 on 3.0(4r) doesn't expose these)",
+            "required": True,
+        },
+        {
+            "service": "SSH",
+            "transport": "tcp",
+            "port": 22,
+            "description": "XMLAPI session reaper",
+            "required": False,
+        },
+        {
+            "service": "KVM viewer",
+            "transport": "tcp",
+            "port": 2068,
+            "description": "Java KVM session port (client-side reachability)",
+            "required": False,
+        },
+    ]
+
+    def requirements(self) -> list[dict]:
+        https_port = int(self.credentials.get("port") or 443)
+        ssh_port   = int(self.credentials.get("ssh_port") or 22)
+        return [
+            {**self.REQUIREMENTS[0], "port": https_port},
+            {**self.REQUIREMENTS[1], "port": https_port},
+            {**self.REQUIREMENTS[2], "port": ssh_port},
+            {**self.REQUIREMENTS[3]},
+        ]
+
     def __init__(self, hostname: str, credentials: dict):
         super().__init__(hostname, credentials)
         self.base = f"https://{hostname}:{self.port}"

@@ -5,6 +5,7 @@ Tested against CIMC 2.0(9f) on UCS C-series M2/M3 servers.
 """
 import asyncio
 import json
+import logging
 import re
 import ssl
 import sys
@@ -13,6 +14,8 @@ import xml.etree.ElementTree as ET
 from typing import Any
 import httpx
 from .base import BaseAdapter
+
+logger = logging.getLogger(__name__)
 
 
 def _legacy_ssl_context() -> ssl.SSLContext:
@@ -30,6 +33,48 @@ def _legacy_ssl_context() -> ssl.SSLContext:
 
 
 class CIMCAdapter(BaseAdapter):
+    REQUIREMENTS = [
+        {
+            "service": "HTTPS (XMLAPI)",
+            "transport": "xmlapi",
+            "port": 443,
+            "description": "NuovaAPI for inventory and power actions — required",
+            "required": True,
+        },
+        {
+            "service": "SSH",
+            "transport": "tcp",
+            "port": 22,
+            "description": "Used post-poll to reap XMLAPI session slots (CIMC caps at 4)",
+            "required": False,
+        },
+        {
+            "service": "IPMI over LAN",
+            "transport": "ipmi",
+            "port": 623,
+            "description": "Fan RPMs, PSU/inlet temps, per-PSU watts. Falls back to XMLAPI if disabled",
+            "required": False,
+        },
+        {
+            "service": "KVM viewer",
+            "transport": "tcp",
+            "port": 2068,
+            "description": "Java KVM session port — the client (your browser host) needs to reach this, not the homelab-manger server",
+            "required": False,
+        },
+    ]
+
+    def requirements(self) -> list[dict]:
+        https_port = int(self.credentials.get("port") or 443)
+        ssh_port   = int(self.credentials.get("ssh_port") or 22)
+        ipmi_port  = int(self.credentials.get("ipmi_port") or 623)
+        return [
+            {**self.REQUIREMENTS[0], "port": https_port},
+            {**self.REQUIREMENTS[1], "port": ssh_port},
+            {**self.REQUIREMENTS[2], "port": ipmi_port},
+            {**self.REQUIREMENTS[3]},  # KVM port is fixed by CIMC firmware
+        ]
+
     def __init__(self, hostname: str, credentials: dict):
         super().__init__(hostname, credentials)
         self.username = credentials.get("username", "admin")
@@ -60,7 +105,17 @@ class CIMCAdapter(BaseAdapter):
     async def _post_xml_once(self, body: str) -> ET.Element:
         async with httpx.AsyncClient(verify=self._ssl_ctx, timeout=15) as c:
             r = await c.post(self.url, content=body, headers={"Content-Type": "application/xml"})
-            r.raise_for_status()
+            # Tag transport/HTTP errors with host context before they bubble up
+            # — bare `raise_for_status` produces a one-liner with the URL but
+            # nothing about which device adapter it came from in our logs.
+            try:
+                r.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                logger.warning(
+                    "CIMC XMLAPI POST to %s returned HTTP %d (body: %r)",
+                    self.hostname, r.status_code, r.text[:200],
+                )
+                raise
         return ET.fromstring(r.text)
 
     async def _post_xml(self, body: str) -> ET.Element:
@@ -138,7 +193,7 @@ class CIMCAdapter(BaseAdapter):
         if not (username and password):
             return -1
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         def _drain(channel, quiet_ms: int = 250, hard_ms: int = 1500,
                    wait_for_prompt: bool = False) -> str:
@@ -215,7 +270,15 @@ class CIMCAdapter(BaseAdapter):
                 channel.send("top\n"); _drain(channel)
                 channel.send("exit\n")
                 return count
-            except Exception:
+            except Exception as exc:
+                # Without this log we cannot tell SSH-down vs auth-fail vs
+                # prompt-parse failure apart. Returning -1 is correct (the
+                # caller treats it as best-effort), but the operator needs
+                # to see *why* the reaper is failing so they can fix it.
+                logger.warning(
+                    "CIMC SSH session reaper failed against %s:%s — %s: %s",
+                    self.hostname, ssh_port, type(exc).__name__, exc,
+                )
                 return -1
             finally:
                 if transport is not None:
@@ -579,7 +642,7 @@ print(json.dumps({"ok": False, "error": last_err or "unknown", "tb": last_tb or 
             except subprocess.TimeoutExpired:
                 return -2, "", "IPMI worker exceeded 75s timeout"
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         rc, stdout, stderr = await loop.run_in_executor(None, _run_worker)
 
         if rc == -1:

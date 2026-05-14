@@ -3,12 +3,34 @@ Generic SNMP adapter using puresnmp (pure Python, no C deps, no version chaos).
 """
 import asyncio
 import logging
+import time
 from datetime import timedelta
 from typing import Any
 from .base import BaseAdapter
 from .oui import lookup as oui_lookup
 
 logger = logging.getLogger(__name__)
+
+# Rate-limit duplicate SNMP failure warnings per (host, port, error-type).
+# A single misconfigured device (wrong community, host down) otherwise spams
+# ~10 walk-failed lines per poll cycle. We still want to know it happened —
+# just not 10x per minute forever. First occurrence logs immediately; further
+# occurrences are suppressed until _SNMP_WARN_QUIET_SECONDS has elapsed.
+_SNMP_WARN_QUIET_SECONDS = 300
+_snmp_last_warn: dict[tuple, float] = {}
+
+
+def _snmp_warn_ratelimited(key: tuple, *args, **kwargs) -> None:
+    """Emit `logger.warning(*args, **kwargs)` only if we haven't already
+    warned for this `key` within _SNMP_WARN_QUIET_SECONDS. Otherwise drop it
+    silently — the first occurrence is enough context for an operator to
+    investigate; the rest is noise."""
+    now = time.monotonic()
+    last = _snmp_last_warn.get(key)
+    if last is not None and (now - last) < _SNMP_WARN_QUIET_SECONDS:
+        return
+    _snmp_last_warn[key] = now
+    logger.warning(*args, **kwargs)
 
 # IF-MIB
 _IF_DESCR        = "1.3.6.1.2.1.2.2.1.2"
@@ -54,6 +76,18 @@ _BRIDGE_BASE_MAC = "1.3.6.1.2.1.17.1.1.0"
 
 _IP_ORIGIN_NAMES = {1: "other", 2: "manual", 4: "dhcp", 5: "linklayer", 6: "random"}
 
+# Communities we treat as non-secret for log purposes. Anything else (a custom
+# string the operator picked) gets masked so it doesn't end up in container
+# logs / log shippers in plaintext. `public` / `private` are the historical
+# RFC defaults — virtually every SNMP agent ships pre-configured with them.
+_PUBLIC_COMMUNITIES = {"public", "private"}
+
+
+def _mask_community(community: str) -> str:
+    """Return a redacted form unless the community is one of the well-known
+    defaults. Avoids leaking custom strings into shared logs."""
+    return community if community in _PUBLIC_COMMUNITIES else "<set>"
+
 # POWER-ETHERNET-MIB pethPsePortDetectionStatus values, mapped to the three
 # states the UI actually distinguishes: delivering, fault, and "nothing here".
 # Standard state 2 (searching = PoE enabled but no PD detected) and state 5
@@ -85,8 +119,16 @@ def _walk_sync(host: str, community: str, oid: str, port: int = 161) -> list[tup
         for vb in puresnmp.walk(host, community, oid, port=port):
             results.append((str(vb.oid), vb.value))
     except Exception as exc:
-        logger.warning("SNMP walk failed: host=%s oid=%s community=%r port=%d — %s: %s",
-                       host, oid, community, port, type(exc).__name__, exc)
+        # De-dupe on (host, port, exception class). A wrong community produces
+        # the same exception type for every OID in a poll — log once per host
+        # per 5 minutes instead of per-OID.
+        _snmp_warn_ratelimited(
+            ("walk", host, port, type(exc).__name__),
+            "SNMP walk failed: host=%s oid=%s community=%s port=%d — %s: %s "
+            "(further identical failures from this host suppressed for %ds)",
+            host, oid, _mask_community(community), port,
+            type(exc).__name__, exc, _SNMP_WARN_QUIET_SECONDS,
+        )
     return results
 
 
@@ -109,17 +151,17 @@ def _set_sync(host: str, community: str, oid: str, value: int, port: int = 161) 
 
 
 async def _walk(host, community, oid, port=161) -> list[tuple[str, Any]]:
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _walk_sync, host, community, oid, port)
 
 
 async def _get(host, community, oid, port=161) -> Any:
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _get_sync, host, community, oid, port)
 
 
 async def _set(host, community, oid, value, port=161) -> dict:
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _set_sync, host, community, oid, value, port)
 
 
@@ -201,14 +243,37 @@ def _first_nonempty(walk_result) -> str | None:
 
 
 class SNMPAdapter(BaseAdapter):
+    REQUIREMENTS = [
+        {
+            "service": "SNMPv2c",
+            "transport": "snmp",
+            "port": 161,
+            "description": "Read community for inventory, ports, MAC table",
+            "required": True,
+        },
+    ]
+
+    def requirements(self) -> list[dict]:
+        # Reflect any port override from credentials so the tooltip and the
+        # active test use the same number the adapter actually talks to.
+        port = int(self.credentials.get("port") or 161)
+        return [{**r, "port": port} for r in self.REQUIREMENTS]
+
     def __init__(self, hostname: str, credentials: dict):
         super().__init__(hostname, credentials)
         # `.get(key, default)` only uses the default when the key is missing.
         # An empty string in the form lands in the JSON blob as "" — which is
         # a valid community wire-side but always rejected by the agent — so
         # use `or` to also fall back when the stored value is empty/None.
+        # Defaults follow the historical SNMP convention: public for reads
+        # (read-only), private for writes (read-write). Most agents ship with
+        # exactly these two communities pre-configured. Users with a custom
+        # write community must set `write_community` explicitly; we don't fall
+        # back to the read community for writes because that would silently
+        # SET-with-public on misconfigured devices and produce confusing
+        # "No Access" errors instead of failing the SET at credential build.
         self.community       = credentials.get("community") or "public"
-        self.write_community = credentials.get("write_community") or self.community
+        self.write_community = credentials.get("write_community") or "private"
         self.port            = int(credentials.get("port") or 161)
 
     def get_supported_cache_keys(self) -> list[str]:
@@ -250,9 +315,12 @@ class SNMPAdapter(BaseAdapter):
         # already log via _walk_sync; only _get failures need surfacing here.
         for label, result in zip(probe_labels, results):
             if isinstance(result, Exception):
-                logger.warning("SNMP probe failed: host=%s probe=%s community=%r port=%d — %s: %s",
-                               self.hostname, label, self.community, self.port,
-                               type(result).__name__, result)
+                _snmp_warn_ratelimited(
+                    ("probe", self.hostname, self.port, label, type(result).__name__),
+                    "SNMP probe failed: host=%s probe=%s community=%s port=%d — %s: %s",
+                    self.hostname, label, _mask_community(self.community),
+                    self.port, type(result).__name__, result,
+                )
 
         def _ok(v):
             return None if isinstance(v, Exception) else v
@@ -309,11 +377,12 @@ class SNMPAdapter(BaseAdapter):
             # so the user can tell those apart from a legitimately-down box.
             other_results = (descr, uptime, base_mac, ipaddr_w, mask_w, origin_w, route_w, fw_w, sn_w)
             if all(v is None or v == [] for v in other_results):
-                logger.warning(
+                _snmp_warn_ratelimited(
+                    ("offline", self.hostname, self.port),
                     "SNMP host=%s appears offline or rejecting all probes "
-                    "(community=%r port=%d) — check community string, host reachability, "
+                    "(community=%s port=%d) — check community string, host reachability, "
                     "and SNMP manager allow-list on the device",
-                    self.hostname, self.community, self.port,
+                    self.hostname, _mask_community(self.community), self.port,
                 )
 
         return {
