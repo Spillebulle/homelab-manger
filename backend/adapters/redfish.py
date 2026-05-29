@@ -13,6 +13,22 @@ import httpx
 from .base import BaseAdapter
 
 
+# pysnmp 7.x leaks when SnmpEngine() is built repeatedly — and the Huawei
+# enrichment path used to build ~4 per poll cycle, per iBMC device (one each in
+# _huawei_enrich / _huawei_enrich_power / _huawei_pcie_cards /
+# _huawei_chassis_model). Each engine drags in a large MIB/config datastore that
+# close_dispatcher() doesn't fully reclaim, AND leaves a UDP transport registered
+# on the event loop that the loop keeps servicing forever. The observed symptom
+# was a container creeping to multi-GB RAM and one core pinned at 100%, getting
+# "slower and slower" as orphaned transports accumulated. Fix: build exactly one
+# engine/USM/transport per (host, port, USM identity) and reuse it for the life
+# of the process — never close the dispatcher. The poller and every HTTP handler
+# share uvicorn's single event loop, so a cached transport stays bound to a live
+# loop. Keyed including the secrets so a credential change rebuilds cleanly (the
+# stale engine leaks once, which is acceptable for a rare event).
+_SNMP_SETUP_CACHE: dict[tuple, tuple] = {}
+
+
 class RedfishAdapter(BaseAdapter):
     # One adapter class serves redfish / ilo / idrac / ibmc. The base requirement
     # is HTTPS on the configured port. Huawei iBMC gets an extra SNMPv3 hint
@@ -403,16 +419,29 @@ class RedfishAdapter(BaseAdapter):
             "aes192": ps.USM_PRIV_CFB192_AES, "aes256": ps.USM_PRIV_CFB256_AES,
             "des": ps.USM_PRIV_CBC56_DES,
         }
-        auth_proto = auth_map.get(str(self.credentials.get("snmp_auth_proto", "sha")).lower(), ps.USM_AUTH_HMAC96_SHA)
-        priv_proto = priv_map.get(str(self.credentials.get("snmp_priv_proto", "aes")).lower(), ps.USM_PRIV_CFB128_AES)
+        auth_name  = str(self.credentials.get("snmp_auth_proto", "sha")).lower()
+        priv_name  = str(self.credentials.get("snmp_priv_proto", "aes")).lower()
+        auth_proto = auth_map.get(auth_name, ps.USM_AUTH_HMAC96_SHA)
+        priv_proto = priv_map.get(priv_name, ps.USM_PRIV_CFB128_AES)
+
+        # Reuse a cached engine/USM/transport if we've built one for this exact
+        # identity — see _SNMP_SETUP_CACHE comment at module level. This is the
+        # whole point of the fix: one engine for the life of the process instead
+        # of one per poll.
+        cache_key = (self.hostname, port, user, auth_pass, priv_pass, auth_name, priv_name)
+        cached = _SNMP_SETUP_CACHE.get(cache_key)
+        if cached is not None:
+            engine, usm, transport = cached
+            return engine, usm, transport, ps
         try:
             engine    = ps.SnmpEngine()
             usm       = ps.UsmUserData(user, auth_pass, priv_pass,
                                        authProtocol=auth_proto, privProtocol=priv_proto)
             transport = await ps.UdpTransportTarget.create((self.hostname, port), timeout=4, retries=1)
-            return engine, usm, transport, ps
         except Exception:
             return None
+        _SNMP_SETUP_CACHE[cache_key] = (engine, usm, transport)
+        return engine, usm, transport, ps
 
     async def _huawei_enrich(self, cpus: list[dict], memory: list[dict]) -> None:
         """Overlay vendor SNMP data onto the Redfish-derived CPU/memory dicts.
@@ -444,10 +473,12 @@ class RedfishAdapter(BaseAdapter):
                             if fields.get("location"): m["location"] = fields["location"]
                             break
         finally:
-            try:
-                engine.close_dispatcher()
-            except Exception:
-                pass
+            # Intentionally do NOT close_dispatcher(): the engine/transport are
+            # cached and reused across poll cycles by _huawei_snmp_setup. Closing
+            # would break the next reuse, and the old per-poll create+close cycle
+            # was the leak itself (pysnmp 7.x: unbounded RAM growth + a pinned
+            # CPU core from orphaned asyncio transports).
+            pass
 
     @staticmethod
     async def _snmp_cpu_models(engine, usm, transport, ps, cpu_ids: list[str]) -> dict[str, str]:
@@ -506,10 +537,12 @@ class RedfishAdapter(BaseAdapter):
                 except (TypeError, ValueError):
                     pass
         finally:
-            try:
-                engine.close_dispatcher()
-            except Exception:
-                pass
+            # Intentionally do NOT close_dispatcher(): the engine/transport are
+            # cached and reused across poll cycles by _huawei_snmp_setup. Closing
+            # would break the next reuse, and the old per-poll create+close cycle
+            # was the leak itself (pysnmp 7.x: unbounded RAM growth + a pinned
+            # CPU core from orphaned asyncio transports).
+            pass
 
     async def _huawei_pcie_cards(self) -> list[dict]:
         """Walk the Huawei PCIe inventory table and return a list of
@@ -535,10 +568,12 @@ class RedfishAdapter(BaseAdapter):
                 return_exceptions=True,
             )
         finally:
-            try:
-                engine.close_dispatcher()
-            except Exception:
-                pass
+            # Intentionally do NOT close_dispatcher(): the engine/transport are
+            # cached and reused across poll cycles by _huawei_snmp_setup. Closing
+            # would break the next reuse, and the old per-poll create+close cycle
+            # was the leak itself (pysnmp 7.x: unbounded RAM growth + a pinned
+            # CPU core from orphaned asyncio transports).
+            pass
 
         def _safe(d):
             return d if isinstance(d, dict) else {}
