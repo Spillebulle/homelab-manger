@@ -38,6 +38,45 @@ from .base import BaseAdapter
 logger = logging.getLogger(__name__)
 
 
+def _iter_usb_sysfs_dirs(vid: int, pid: int):
+    """Yield the /sys/bus/usb/devices/* dirs whose idVendor:idProduct match
+    (Linux only). Empty generator on non-Linux or when sysfs isn't readable."""
+    if not sys.platform.startswith("linux"):
+        return
+    base = "/sys/bus/usb/devices"
+    try:
+        entries = os.listdir(base)
+    except OSError:
+        return
+    for entry in entries:
+        d = os.path.join(base, entry)
+        try:
+            with open(os.path.join(d, "idVendor")) as f:
+                v = int(f.read().strip(), 16)
+            with open(os.path.join(d, "idProduct")) as f:
+                p = int(f.read().strip(), 16)
+        except (OSError, ValueError):
+            continue
+        if v == vid and p == pid:
+            yield d
+
+
+def _usb_disable_autosuspend(vid: int, pid: int) -> None:
+    """Best-effort: pin the device's runtime PM to 'on' so the kernel never
+    USB-autosuspends it. Cheap UPS HID interfaces frequently fail to resume
+    from autosuspend and then stop answering until re-plugged — the textbook
+    "works, then goes offline while idle" failure. Writing `on` to the device's
+    `power/control` is the standard NUT-era fix. Silent no-op if sysfs is
+    read-only or the device isn't present (we re-apply every poll, so it also
+    covers a device that just re-enumerated back to the default `auto`)."""
+    for d in _iter_usb_sysfs_dirs(vid, pid):
+        try:
+            with open(os.path.join(d, "power", "control"), "w") as f:
+                f.write("on")
+        except OSError:
+            pass
+
+
 def _usb_reset_by_id(vid: int, pid: int) -> bool:
     """Best-effort USBDEVFS_RESET of the device matching vid:pid (Linux only).
 
@@ -56,22 +95,7 @@ def _usb_reset_by_id(vid: int, pid: int) -> bool:
     except ImportError:
         return False
     USBDEVFS_RESET = (ord("U") << 8) | 20   # _IO('U', 20)
-    base = "/sys/bus/usb/devices"
-    try:
-        entries = os.listdir(base)
-    except OSError:
-        return False
-    for entry in entries:
-        d = os.path.join(base, entry)
-        try:
-            with open(os.path.join(d, "idVendor")) as f:
-                v = int(f.read().strip(), 16)
-            with open(os.path.join(d, "idProduct")) as f:
-                p = int(f.read().strip(), 16)
-        except (OSError, ValueError):
-            continue
-        if v != vid or p != pid:
-            continue
+    for d in _iter_usb_sysfs_dirs(vid, pid):
         try:
             with open(os.path.join(d, "busnum")) as f:
                 bus = int(f.read().strip())
@@ -440,6 +464,11 @@ class USBUPSAdapter(BaseAdapter):
             raise RuntimeError(
                 "hidapi not installed — `pip install hidapi` and ensure "
                 "libhidapi is present (apt: libhidapi-libusb0).") from exc
+
+        # Keep the kernel from autosuspending the UPS between polls — these HID
+        # stacks often don't wake again. Cheap idempotent sysfs write; re-applied
+        # each poll so it also re-covers a device that just re-enumerated.
+        _usb_disable_autosuspend(self.vid, self.pid)
 
         # Serialise the whole open→read→close against any other USB session
         # (poll vs refresh vs diagnostics) and retry a few times to ride out a
