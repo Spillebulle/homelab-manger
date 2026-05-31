@@ -105,3 +105,18 @@ class AuthUser(Base):
     password_hash = Column(String(255), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ApiKey(Base):
+    """A bearer token for programmatic API access, as an alternative to the
+    cookie session. Only the SHA-256 hash is stored — the plaintext is shown
+    once at creation and never recoverable. `prefix` is a non-secret leading
+    slice kept purely so the UI can identify which key is which."""
+    __tablename__ = "api_keys"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(120), nullable=False)
+    key_hash = Column(String(64), nullable=False, unique=True, index=True)  # sha256 hex
+    prefix = Column(String(20), nullable=False)                              # display only
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_used_at = Column(DateTime, nullable=True)

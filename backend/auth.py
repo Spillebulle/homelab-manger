@@ -1,18 +1,43 @@
+import hashlib
 import logging
 import os
 import secrets
+from datetime import datetime
 
 import bcrypt
-from fastapi import HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
-from .database import SessionLocal
-from .models import AuthUser
+from .database import SessionLocal, get_db
+from .models import ApiKey, AuthUser
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_USERNAME = "admin"
 SESSION_USER_KEY = "user"
+
+# Bearer API keys: `hlm_` + 32 random url-safe bytes. Only the SHA-256 hash is
+# persisted; the plaintext is returned once at creation.
+API_KEY_PREFIX = "hlm_"
+
+
+def hash_api_key(plain: str) -> str:
+    return hashlib.sha256(plain.encode("utf-8")).hexdigest()
+
+
+def generate_api_key() -> tuple[str, str, str]:
+    """Return (plaintext, display_prefix, sha256_hash) for a fresh key."""
+    token = API_KEY_PREFIX + secrets.token_urlsafe(32)
+    return token, token[:12], hash_api_key(token)
+
+
+def _api_key_from_request(request: Request) -> str | None:
+    """Pull a bearer token from `Authorization: Bearer <key>` or `X-API-Key`."""
+    auth = request.headers.get("Authorization", "")
+    if auth[:7].lower() == "bearer ":
+        return auth[7:].strip() or None
+    xkey = request.headers.get("X-API-Key")
+    return xkey.strip() if xkey else None
 
 # bcrypt has a hard 72-byte input limit. Truncate at the byte level (not chars)
 # so multi-byte UTF-8 passwords don't get split mid-codepoint.
@@ -98,15 +123,33 @@ def bootstrap_admin() -> None:
         db.close()
 
 
-def current_user(request: Request) -> str:
-    """Dependency: returns the username from session, or 401."""
+def current_user(request: Request, db: Session = Depends(get_db)) -> str:
+    """Dependency: authenticate via cookie session OR a bearer API key.
+
+    Session wins (cheap, no DB hit). Otherwise an `Authorization: Bearer` /
+    `X-API-Key` header is matched against the api_keys table by hash; on a hit
+    we stamp last_used_at and return the single admin user's name. 401 if
+    neither path authenticates."""
     user = request.session.get(SESSION_USER_KEY)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-        )
-    return user
+    if user:
+        return user
+
+    token = _api_key_from_request(request)
+    if token:
+        key = db.query(ApiKey).filter(ApiKey.key_hash == hash_api_key(token)).first()
+        if key:
+            key.last_used_at = datetime.utcnow()
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()  # last_used_at is best-effort; don't fail auth on it
+            row = db.query(AuthUser).first()
+            return row.username if row else "apikey"
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Not authenticated",
+    )
 
 
 def authenticate(db: Session, username: str, password: str) -> AuthUser | None:

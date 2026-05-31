@@ -17,8 +17,11 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from . import __version__ as APP_VERSION
 from .database import get_db, init_db
-from .models import Device, DeviceCache, DeviceMetric, AuthUser
-from .schemas import DeviceCreate, DeviceUpdate, LoginRequest, ChangePasswordRequest, PreflightRequest
+from .models import Device, DeviceCache, DeviceMetric, AuthUser, ApiKey
+from .schemas import (
+    DeviceCreate, DeviceUpdate, LoginRequest, ChangePasswordRequest,
+    PreflightRequest, ApiKeyCreate,
+)
 from . import poller
 from .adapters import get_adapter
 from .adapters import oui as oui_db
@@ -27,6 +30,7 @@ from .auth import (
     authenticate,
     bootstrap_admin,
     current_user,
+    generate_api_key,
     get_session_secret,
     hash_password,
     verify_password,
@@ -220,6 +224,45 @@ def list_devices(db: Session = Depends(get_db)):
             "last_seen": status_row.updated_at.isoformat() if status_row and status_row.updated_at else None,
         })
     return result
+
+
+@api.get("/api-keys")
+def list_api_keys(db: Session = Depends(get_db)):
+    """List API keys (metadata only — the secret is never returned after
+    creation). Ordered newest first."""
+    keys = db.query(ApiKey).order_by(ApiKey.id.desc()).all()
+    return [
+        {
+            "id": k.id,
+            "name": k.name,
+            "prefix": k.prefix,
+            "created_at": k.created_at.isoformat() if k.created_at else None,
+            "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
+        }
+        for k in keys
+    ]
+
+
+@api.post("/api-keys", status_code=201)
+def create_api_key(body: ApiKeyCreate, db: Session = Depends(get_db)):
+    """Create a key and return the plaintext token ONCE. Only its hash is
+    stored, so this is the only chance to copy it."""
+    token, prefix, key_hash = generate_api_key()
+    k = ApiKey(name=(body.name or "API key").strip()[:120], key_hash=key_hash, prefix=prefix)
+    db.add(k)
+    db.commit()
+    db.refresh(k)
+    return {"id": k.id, "name": k.name, "prefix": prefix, "key": token}
+
+
+@api.delete("/api-keys/{key_id}")
+def delete_api_key(key_id: int, db: Session = Depends(get_db)):
+    k = db.query(ApiKey).filter(ApiKey.id == key_id).first()
+    if not k:
+        raise HTTPException(status_code=404, detail="API key not found")
+    db.delete(k)
+    db.commit()
+    return {"ok": True}
 
 
 @api.post("/devices", status_code=201)

@@ -26,6 +26,10 @@ class DeviceUpdate(BaseModel):
     poll_interval: Optional[int] = None
 
 
+class ApiKeyCreate(BaseModel):
+    name: Optional[str] = None
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str
