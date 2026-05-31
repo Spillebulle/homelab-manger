@@ -214,6 +214,7 @@ def list_devices(db: Session = Depends(get_db)):
             "hostname": d.hostname,
             "device_type": d.device_type,
             "adapter_type": d.adapter_type,
+            "poll_interval": d.poll_interval,
             "status": status_data,
             "status_error": status_row.error if status_row else None,
             "last_seen": status_row.updated_at.isoformat() if status_row and status_row.updated_at else None,
@@ -227,7 +228,7 @@ def create_device(body: DeviceCreate, db: Session = Depends(get_db)):
     dev = Device(
         name=body.name, hostname=body.hostname, device_type=body.device_type,
         adapter_type=body.adapter_type, credentials=body.credentials,
-        enabled=body.enabled, notes=body.notes,
+        enabled=body.enabled, notes=body.notes, poll_interval=body.poll_interval,
     )
     db.add(dev)
     db.commit()

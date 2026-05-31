@@ -44,6 +44,9 @@ class Device(Base):
     credentials = Column(EncryptedJSON)
     enabled = Column(Boolean, default=True)
     notes = Column(Text)
+    # Per-device poll interval in seconds. NULL ⇒ use the poller's default
+    # (DEFAULT_POLL_INTERVAL). The poller clamps to a sane minimum at read time.
+    poll_interval = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

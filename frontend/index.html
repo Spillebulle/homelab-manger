@@ -1262,6 +1262,20 @@
           </div>
         </div>
 
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="label">Poll interval (seconds)</label>
+            <input x-model="form.poll_interval" type="number" min="5" step="1"
+                   class="input w-full" placeholder="60 (default)">
+          </div>
+          <div class="flex items-end">
+            <p class="text-xs text-gray-500 pb-2">
+              How often this device is polled. Leave blank for the default (60s).
+              Minimum 5s.
+            </p>
+          </div>
+        </div>
+
         <!-- Preflight results — only shown after the user clicks Test
              connection. Each row uses the same colour scheme as the status
              dots on the device list so the meaning is consistent. -->
@@ -2251,6 +2265,7 @@
             usb_vid: '', usb_pid: '', nominal_real_power: '',
           },
           notes: '',
+          poll_interval: '',
         };
         this.onPreflightInputChanged();
         this.showAdapterInfo = false;
@@ -2296,6 +2311,7 @@
             adapter_type: '',
             credentials:  creds,
             notes:        d.notes || '',
+            poll_interval: d.poll_interval ?? '',
           };
           this.onPreflightInputChanged();
           this.showAdapterInfo = false;
@@ -2314,6 +2330,13 @@
       },
 
       async saveDevice() {
+        // Poll interval: empty → null (use default); otherwise an int clamped
+        // to the 5s floor the backend enforces.
+        let pollInterval = null;
+        if (this.form.poll_interval !== '' && this.form.poll_interval != null) {
+          const n = parseInt(this.form.poll_interval, 10);
+          if (!isNaN(n)) pollInterval = Math.max(5, n);
+        }
         const body = JSON.stringify({
           name:         this.form.name,
           hostname:     this.form.hostname,
@@ -2321,6 +2344,7 @@
           adapter_type: this.form.adapter_type,
           credentials:  this.form.credentials,
           notes:        this.form.notes,
+          poll_interval: pollInterval,
         });
         let savedDeviceId = this.editingDevice?.id;
         if (this.editingDevice) {

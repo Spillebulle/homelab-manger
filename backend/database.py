@@ -47,7 +47,20 @@ def init_db():
     from . import models  # noqa: F401 — ensure models are registered
     Base.metadata.create_all(bind=engine)
     _migrate_device_cache_unique(engine)
+    _migrate_add_poll_interval(engine)
     _migrate_credentials_to_encrypted(engine)
+
+
+def _migrate_add_poll_interval(engine):
+    """Add the `devices.poll_interval` column to pre-existing databases.
+    `create_all` only creates missing *tables*, never adds columns to an
+    existing one, so we ALTER it in by hand. SQLite has no `ADD COLUMN IF NOT
+    EXISTS`, so check `PRAGMA table_info` first. Idempotent."""
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(devices)")).fetchall()]
+        if "poll_interval" not in cols:
+            conn.execute(text("ALTER TABLE devices ADD COLUMN poll_interval INTEGER"))
+            logger.warning("devices: added poll_interval column on startup")
 
 
 def _migrate_device_cache_unique(engine):

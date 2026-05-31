@@ -10,6 +10,9 @@ class DeviceCreate(BaseModel):
     credentials: dict[str, Any] = {}
     enabled: bool = True
     notes: Optional[str] = None
+    # Seconds between polls; None ⇒ poller default. Clamped to a minimum by the
+    # poller. Empty form values arrive as None.
+    poll_interval: Optional[int] = None
 
 
 class DeviceUpdate(BaseModel):
@@ -20,6 +23,7 @@ class DeviceUpdate(BaseModel):
     credentials: Optional[dict[str, Any]] = None
     enabled: Optional[bool] = None
     notes: Optional[str] = None
+    poll_interval: Optional[int] = None
 
 
 class LoginRequest(BaseModel):

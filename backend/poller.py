@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from datetime import datetime, timedelta
 
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -11,7 +12,26 @@ from .models import Device, DeviceCache, DeviceMetric
 from .adapters import get_adapter
 
 logger = logging.getLogger(__name__)
-POLL_INTERVAL = int(60)  # seconds between full polls
+
+# Default seconds between polls when a device doesn't set its own
+# `poll_interval`. Overridable per-process via the POLL_INTERVAL env var.
+POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "60"))
+# Floor for a per-device override — stops a typo (e.g. 1) from hammering a
+# device or busy-looping the scheduler.
+MIN_POLL_INTERVAL = 5
+# How often the scheduler wakes to check which devices are due. Polls fire as
+# independent tasks, so this is just the scheduling granularity, not a cap on
+# how long a single poll may take.
+_BASE_TICK = 5
+
+
+def _device_interval(device) -> float:
+    """Effective poll interval (seconds) for a device: its `poll_interval` if
+    set and sane, else the default. Clamped to MIN_POLL_INTERVAL."""
+    iv = device.poll_interval
+    if iv is None or iv <= 0:
+        return float(POLL_INTERVAL)
+    return float(max(int(iv), MIN_POLL_INTERVAL))
 
 # How long to keep time-series samples (device_metrics). Pruned per device on
 # every poll — an indexed DELETE, cheap at homelab scale. 0/negative disables
@@ -129,25 +149,53 @@ async def poll_device(device_id: int, on_update=None):
         db.close()
 
 async def poll_loop(on_update=None):
+    """Per-device scheduler. Wakes every _BASE_TICK, and for each enabled
+    device whose `poll_interval` has elapsed since its last poll, fires
+    `poll_device` as an independent task. Firing tasks (rather than awaiting a
+    single gather of everyone) means a slow device — a CIMC poll can run 20-30s
+    — doesn't delay a fast UPS set to a short interval, and each device is
+    re-polled on its own cadence. A device already mid-poll is skipped until it
+    finishes (no overlap), so an interval shorter than a device's actual poll
+    time just polls it back-to-back."""
+    last_polled: dict[int, float] = {}   # device_id → monotonic time of last fire
+    in_flight: set[int] = set()          # devices whose poll task hasn't finished
+    tasks: set = set()                   # keep task refs alive until done
+
+    async def _run(device_id):
+        try:
+            await poll_device(device_id, on_update)
+        except Exception as exc:
+            logger.error("poll_device %d raised: %s: %s",
+                         device_id, type(exc).__name__, exc)
+        finally:
+            in_flight.discard(device_id)
+
     while True:
         db = SessionLocal()
         try:
-            ids = [d.id for d in db.query(Device).filter(Device.enabled.is_(True)).all()]
+            devices = [(d.id, _device_interval(d))
+                       for d in db.query(Device).filter(Device.enabled.is_(True)).all()]
+        except Exception as exc:
+            logger.error("poll_loop device query failed: %s", exc)
+            devices = []
         finally:
             db.close()
 
-        if ids:
-            # Pass the callback to each individual device poll. `poll_device`
-            # has its own try/except so the only exceptions that surface here
-            # are catastrophic ones (cancellation, OOM, programmer error in
-            # poll_device itself). Don't let those vanish silently — log them
-            # tagged with the device_id so the next poll cycle still runs.
-            results = await asyncio.gather(
-                *[poll_device(i, on_update) for i in ids], return_exceptions=True,
-            )
-            for device_id, exc in zip(ids, results):
-                if isinstance(exc, Exception):
-                    logger.error("poll_device %d raised through gather: %s: %s",
-                                 device_id, type(exc).__name__, exc)
+        now = time.monotonic()
+        # Drop bookkeeping for devices that are gone/disabled so the dicts
+        # don't grow unbounded as devices come and go.
+        live = {dev_id for dev_id, _ in devices}
+        for stale in [k for k in last_polled if k not in live]:
+            last_polled.pop(stale, None)
 
-        await asyncio.sleep(POLL_INTERVAL)
+        for device_id, interval in devices:
+            if device_id in in_flight:
+                continue   # still polling from a previous tick — don't overlap
+            if now - last_polled.get(device_id, float("-inf")) >= interval:
+                last_polled[device_id] = now
+                in_flight.add(device_id)
+                t = asyncio.create_task(_run(device_id))
+                tasks.add(t)
+                t.add_done_callback(tasks.discard)
+
+        await asyncio.sleep(_BASE_TICK)
