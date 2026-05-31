@@ -42,6 +42,11 @@ logger = logging.getLogger(__name__)
 # This process-wide lock serialises every USB session across all instances.
 _USB_LOCK = threading.Lock()
 
+# The HID report descriptor is static per device, so parse it once per
+# (vid, pid) and reuse — steady-state polls then issue only the GET_REPORT
+# value reads (fewer USB transfers, fewer chances for a transient read error).
+_FIELDS_CACHE: dict[tuple[int, int], list] = {}
+
 # ── Canonical HID Power Device usage codes (page << 16 | selector) ────────────
 # Values from NUT's drivers/usbhid-ups.c `usage_lkp[]`. Do NOT swap these for
 # the numbers some online "usb hid usage" tables list (e.g. PercentLoad 0x45,
@@ -376,32 +381,39 @@ class USBUPSAdapter(BaseAdapter):
                 "libhidapi is present (apt: libhidapi-libusb0).") from exc
 
         # Serialise the whole open→read→close against any other USB session
-        # (poll vs refresh vs diagnostics) and retry a couple of times to ride
-        # out a transient EBUSY while the previous handle is still releasing.
+        # (poll vs refresh vs diagnostics) and retry a few times to ride out a
+        # transient EBUSY on open OR a transient read error mid-cycle — hidraw
+        # GET_REPORT calls occasionally fail and shouldn't surface as the
+        # device "going offline". The retry covers BOTH open and read; an
+        # earlier version only retried the open, so a read hiccup propagated
+        # straight up as "read error".
         last_exc: Exception | None = None
         with _USB_LOCK:
-            for attempt in range(3):
+            for attempt in range(4):
+                dev = None
                 try:
                     dev, (vid, pid) = self._open_device(hid)
+                    return self._read_from_device(dev, vid, pid)
                 except Exception as exc:
                     last_exc = exc
                     time.sleep(0.3)
-                    continue
-                try:
-                    return self._read_from_device(dev, vid, pid)
                 finally:
-                    try:
-                        dev.close()
-                    except Exception:
-                        pass
-        raise last_exc or RuntimeError("USB UPS open failed")
+                    if dev is not None:
+                        try:
+                            dev.close()
+                        except Exception:
+                            pass
+        raise last_exc or RuntimeError("USB UPS read failed")
 
     def _read_from_device(self, dev, vid, pid) -> dict:
         """Read every interesting usage from an already-open hid.device. Split
         out from _read_all_sync so diagnostics can reuse the same open handle
         (hidraw is exclusive on Linux — re-opening mid-call would fail)."""
-        desc = self._get_descriptor(dev)
-        fields = parse_report_descriptor(desc)
+        # Static descriptor → parse once per (vid,pid), then reuse.
+        fields = _FIELDS_CACHE.get((vid, pid))
+        if fields is None:
+            fields = parse_report_descriptor(self._get_descriptor(dev))
+            _FIELDS_CACHE[(vid, pid)] = fields
         # Map usage → preferred field (feature beats input beats output).
         by_usage: dict[int, HidField] = {}
         rank = {"feature": 0, "input": 1, "output": 2}
