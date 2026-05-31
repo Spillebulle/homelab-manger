@@ -168,11 +168,17 @@ def parse_report_descriptor(desc: bytes) -> list[HidField]:
         if tag in (0x80, 0x90, 0xB0):        # Main: Input / Output / Feature
             rtype = {0x80: "input", 0x90: "output", 0xB0: "feature"}[tag]
             rid = g["report_id"]
-            constant = bool(data & 0x01)      # bit 0 of main item = Constant
             key = (rid, rtype)
             pos = bitpos.get(key, 0)
             count = g["report_count"]
             rsize = g["report_size"]
+            # We deliberately do NOT skip Constant (bit 0) fields. Real UPS
+            # firmwares — PowerWalker/Phoenixtec among them — mark live data
+            # (RemainingCapacity, RunTimeToEmpty, PercentLoad) as Constant; NUT
+            # reads them regardless. Genuine padding carries no Usage, so it
+            # maps to usage 0 and the usage lookups ignore it — but it still
+            # advances the bit cursor so following fields land at the right
+            # offset.
             for idx in range(count):
                 if usage_min is not None and usage_max is not None:
                     u = min(usage_min + idx, usage_max)
@@ -180,12 +186,11 @@ def parse_report_descriptor(desc: bytes) -> list[HidField]:
                     u = usages[idx] if idx < len(usages) else usages[-1]
                 else:
                     u = 0
-                if not constant:
-                    fields.append(HidField(
-                        full_usage(u), rid, rtype, pos + idx * rsize, rsize,
-                        g["logical_min"], g["logical_max"],
-                        g["unit"], g["unit_exp"],
-                    ))
+                fields.append(HidField(
+                    full_usage(u), rid, rtype, pos + idx * rsize, rsize,
+                    g["logical_min"], g["logical_max"],
+                    g["unit"], g["unit_exp"],
+                ))
             bitpos[key] = pos + count * rsize
             usages = []
             usage_min = usage_max = None
@@ -415,7 +420,7 @@ class USBUPSAdapter(BaseAdapter):
             cache[key] = payload
             return payload
 
-        def value(usage: int):
+        def value(usage: int, physical: bool = False):
             f = by_usage.get(usage)
             if f is None:
                 return None
@@ -425,7 +430,17 @@ class USBUPSAdapter(BaseAdapter):
             raw = _extract_bits(payload, f.bit_offset, f.bit_size)
             if f.logical_min < 0:
                 raw = _signed(raw, f.bit_size)
-            return raw * (10 ** f.unit_exp) if f.unit_exp else raw
+            # Unit-exponent handling: only physical-unit usages (V/A/W/Hz/°C)
+            # are scaled, and only by NEGATIVE exponents. Percentages and
+            # seconds (PercentLoad, RemainingCapacity, RunTimeToEmpty) are
+            # dimensionless / seconds per the PDC spec, so their raw logical
+            # value IS the human value. PowerWalker/Phoenixtec firmwares emit
+            # bogus POSITIVE exponents (observed: exp 7 on voltage → ×10^7), so
+            # we clamp to <= 0 — a well-behaved UPS using exp -1 (raw 2300 →
+            # 230.0 V) still scales correctly, while the bogus +7 is ignored.
+            if physical and f.unit_exp < 0:
+                return round(raw * (10 ** f.unit_exp), 3)
+            return raw
 
         def flag(usage: int):
             v = value(usage)
@@ -434,14 +449,14 @@ class USBUPSAdapter(BaseAdapter):
         return {
             "vid": vid, "pid": pid,
             "load_pct":      value(U_PERCENT_LOAD),
-            "active_power":  value(U_ACTIVE_POWER),
-            "config_active_power": value(U_CONFIG_ACTIVE_PW),
+            "active_power":  value(U_ACTIVE_POWER, physical=True),
+            "config_active_power": value(U_CONFIG_ACTIVE_PW, physical=True),
             "charge_pct":    value(U_REMAINING_CAP),
             "runtime_sec":   value(U_RUNTIME_TO_EMPTY),
-            "input_voltage": value(U_VOLTAGE),
-            "config_voltage": value(U_CONFIG_VOLTAGE),
-            "frequency":     value(U_FREQUENCY),
-            "temperature":   value(U_TEMPERATURE),
+            "input_voltage": value(U_VOLTAGE, physical=True),
+            "config_voltage": value(U_CONFIG_VOLTAGE, physical=True),
+            "frequency":     value(U_FREQUENCY, physical=True),
+            "temperature":   value(U_TEMPERATURE, physical=True),
             "ac_present":        flag(U_AC_PRESENT),
             "charging":          flag(U_CHARGING),
             "discharging":       flag(U_DISCHARGING),
@@ -512,7 +527,7 @@ class USBUPSAdapter(BaseAdapter):
             "runtime_sec": r.get("runtime_sec"),
             "runtime_text": self._runtime_text(r.get("runtime_sec")),
             "input_voltage": r.get("input_voltage"),
-            "battery_voltage": r.get("config_voltage"),
+            "nominal_voltage": r.get("config_voltage"),   # ConfigVoltage = rated mains, not battery
             "frequency": r.get("frequency"),
             "temperature": r.get("temperature"),
             "flags": {
