@@ -61,12 +61,19 @@ def _upsert_cache(db, device_id: int, key: str, data: str | None, error: str | N
             set_={"data": data, "error": None, "updated_at": now},
         )
     else:
+        # On error, PRESERVE the last good `data` and its `updated_at` — only
+        # refresh `error`. This lets the UI keep showing the last-known reading
+        # under an "offline / last status" treatment instead of going blank,
+        # and makes `updated_at` mean "last successful poll" (which is what the
+        # dashboard's last_seen / "Updated …" wants — previously it bumped on
+        # every failed attempt, so an offline device falsely read "just now").
+        # First-ever poll with no prior row inserts a data-less error row.
         stmt = sqlite_insert(DeviceCache).values(
             device_id=device_id, cache_key=key, data=None, error=error, updated_at=now,
         )
         stmt = stmt.on_conflict_do_update(
             index_elements=["device_id", "cache_key"],
-            set_={"error": error, "updated_at": now},
+            set_={"error": error},
         )
     db.execute(stmt)
 

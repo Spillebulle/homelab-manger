@@ -238,19 +238,26 @@
                 <!-- UPS overview -->
                 <template x-if="isUps && detail.status">
                   <div>
-                    <!-- State banner -->
+                    <!-- State banner. When the poll errors (lost connection) we
+                         keep the last good reading but flip the banner to a red
+                         "Offline" with a "last status" note. -->
                     <div class="rounded-lg p-4 mb-4 border flex items-center gap-3"
-                         :class="upsStateClass(detail.status.state)">
+                         :class="detail.status_error ? 'bg-red-900/30 border-red-700 text-red-200' : upsStateClass(detail.status.state)">
                       <i class="fa-solid text-xl"
-                         :class="detail.status.state === 'online' ? 'fa-plug-circle-check' : 'fa-battery-quarter'"></i>
-                      <div>
-                        <div class="text-lg font-semibold" x-text="detail.status.state_label"></div>
+                         :class="detail.status_error ? 'fa-plug-circle-xmark' : (detail.status.state === 'online' ? 'fa-plug-circle-check' : 'fa-battery-quarter')"></i>
+                      <div class="min-w-0">
+                        <div class="text-lg font-semibold" x-text="detail.status_error ? 'Offline' : detail.status.state_label"></div>
+                        <div class="text-xs opacity-80" x-show="detail.status_error">
+                          Last status: <span x-text="detail.status.state_label"></span><span x-show="detail.status_updated" x-text="' · ' + relTime(detail.status_updated)"></span>
+                        </div>
                         <div class="text-xs opacity-80"
                              x-text="(detail.status.mfr || '') + ' ' + (detail.status.model || '') + (detail.status.serial ? ' · S/N ' + detail.status.serial : '')"></div>
+                        <div class="text-xs text-red-300/90 mt-0.5 truncate" x-show="detail.status_error"
+                             x-text="detail.status_error" :title="detail.status_error"></div>
                       </div>
                     </div>
-                    <!-- Metric cards -->
-                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-2">
+                    <!-- Metric cards (dimmed when showing a stale last-known reading) -->
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-2" :class="detail.status_error ? 'opacity-50' : ''">
                       <div class="bg-card border border-border rounded-lg p-4">
                         <div class="text-xs text-gray-500 mb-1">Charge</div>
                         <div class="text-2xl font-semibold text-white" x-text="fmtPct(detail.status.charge_pct)"></div>
