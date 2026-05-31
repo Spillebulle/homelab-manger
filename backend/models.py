@@ -107,6 +107,33 @@ class AuthUser(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class ShutdownRule(Base):
+    """Phase-2 outage orchestration. One rule = "when UPS X is on battery and a
+    threshold is crossed, run <action> on target device Y". Rules are owned by a
+    UPS device and target another device (server/switch/etc.).
+
+    Firing is once-per-outage: `last_triggered_at` is stamped when a rule fires
+    and cleared (re-armed) when the UPS returns to mains power — persisted so an
+    app restart mid-outage doesn't re-shut-down a machine that's already down.
+
+    Thresholds (either/both, OR-combined): fire when `charge_pct <=
+    trigger_charge_pct` OR `runtime_sec <= trigger_runtime_sec`. Both NULL ⇒
+    fire as soon as the UPS is on battery."""
+    __tablename__ = "shutdown_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ups_device_id = Column(Integer, ForeignKey("devices.id", ondelete="CASCADE"),
+                           nullable=False, index=True)
+    target_device_id = Column(Integer, ForeignKey("devices.id", ondelete="CASCADE"),
+                              nullable=False)
+    action = Column(String(40), nullable=False, default="graceful_shutdown")
+    trigger_charge_pct = Column(Integer, nullable=True)    # fire when charge% <= this
+    trigger_runtime_sec = Column(Integer, nullable=True)   # fire when runtime(s) <= this
+    enabled = Column(Boolean, default=True)
+    last_triggered_at = Column(DateTime, nullable=True)    # NULL ⇒ armed
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class ApiKey(Base):
     """A bearer token for programmatic API access, as an alternative to the
     cookie session. Only the SHA-256 hash is stored — the plaintext is shown

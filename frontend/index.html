@@ -339,6 +339,107 @@
               </div>
             </template>
 
+            <!-- ── UPS Shutdown plan (outage orchestration) ── -->
+            <template x-if="tab === 'shutdown'">
+              <div x-init="$nextTick(() => loadShutdownRules())">
+                <p class="text-sm text-gray-400 mb-1">
+                  When this UPS goes on battery, automatically run an action on the
+                  devices below once their threshold is reached.
+                </p>
+                <p class="text-xs text-gray-500 mb-4">
+                  Each device fires once per outage and re-arms when mains power returns.
+                  A blank threshold is ignored; if both are blank the action fires as soon
+                  as the UPS is on battery. Actions use each device's own adapter (BMC
+                  graceful shutdown, etc.).
+                </p>
+
+                <!-- Current UPS state context -->
+                <template x-if="detail.status">
+                  <div class="text-xs mb-4 inline-flex items-center gap-2 px-2.5 py-1 rounded border"
+                       :class="detail.status_error ? 'bg-red-900/30 border-red-700 text-red-200' : upsStateClass(detail.status.state)">
+                    <i class="fa-solid fa-bolt"></i>
+                    <span x-text="detail.status_error ? 'Offline' : detail.status.state_label"></span>
+                    <span x-show="!detail.status_error && detail.status.charge_pct != null"
+                          x-text="'· ' + fmtPct(detail.status.charge_pct) + ' · ' + (detail.status.runtime_text || '')"></span>
+                  </div>
+                </template>
+
+                <!-- Add a device -->
+                <div class="flex gap-2 mb-4">
+                  <select x-model="shutdownAddTarget" class="input flex-1">
+                    <option value="">Add a device to protect…</option>
+                    <template x-for="d in shutdownCandidates" :key="d.id">
+                      <option :value="d.id" x-text="d.name + ' (' + d.device_type + ')'"></option>
+                    </template>
+                  </select>
+                  <button @click="addShutdownTarget()" :disabled="!shutdownAddTarget"
+                          class="btn-primary whitespace-nowrap disabled:opacity-50">
+                    <i class="fa-solid fa-plus mr-1"></i>Add
+                  </button>
+                </div>
+
+                <div x-show="!shutdownRules.length"
+                     class="text-sm text-gray-500 bg-card border border-border rounded-lg p-6 text-center">
+                  No devices in the shutdown plan yet.
+                </div>
+
+                <div x-show="shutdownRules.length" class="overflow-x-auto">
+                  <table class="w-full text-sm">
+                    <thead class="text-xs text-gray-500 border-b border-border">
+                      <tr>
+                        <th class="text-left font-medium py-2 pr-3">Device</th>
+                        <th class="text-left font-medium py-2 px-3">Action</th>
+                        <th class="text-left font-medium py-2 px-3">When charge ≤</th>
+                        <th class="text-left font-medium py-2 px-3">When runtime ≤</th>
+                        <th class="text-center font-medium py-2 px-3">On</th>
+                        <th class="py-2 pl-3"></th>
+                      </tr>
+                    </thead>
+                    <tbody class="divide-y divide-border">
+                      <template x-for="rule in shutdownRules" :key="rule.id">
+                        <tr>
+                          <td class="py-2 pr-3">
+                            <div class="text-gray-200" x-text="rule.target_name"></div>
+                            <div class="text-[11px] text-gray-500">
+                              <span x-text="rule.target_type"></span>
+                              <span x-show="rule.last_triggered_at" class="text-amber-400"
+                                    x-text="'· fired ' + relTime(rule.last_triggered_at)"></span>
+                            </div>
+                          </td>
+                          <td class="py-2 px-3">
+                            <select x-model="rule.action" @change="updateShutdownRule(rule)" class="input py-1">
+                              <option value="graceful_shutdown">Graceful shutdown</option>
+                              <option value="power_off">Force power off</option>
+                            </select>
+                          </td>
+                          <td class="py-2 px-3 whitespace-nowrap">
+                            <input type="number" min="0" max="100" x-model="rule._charge"
+                                   @change="updateShutdownRule(rule)"
+                                   class="input py-1 w-20 inline-block" placeholder="—"> %
+                          </td>
+                          <td class="py-2 px-3 whitespace-nowrap">
+                            <input type="number" min="0" x-model="rule._runtimeMin"
+                                   @change="updateShutdownRule(rule)"
+                                   class="input py-1 w-20 inline-block" placeholder="—"> min
+                          </td>
+                          <td class="py-2 px-3 text-center">
+                            <input type="checkbox" x-model="rule.enabled" @change="updateShutdownRule(rule)"
+                                   class="w-4 h-4 accent-blue-500">
+                          </td>
+                          <td class="py-2 pl-3 text-right">
+                            <button @click="deleteShutdownRule(rule)" title="Remove"
+                                    class="text-red-400 hover:text-red-300 px-2 py-1 rounded hover:bg-card">
+                              <i class="fa-solid fa-trash"></i>
+                            </button>
+                          </td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </template>
+
             <!-- ── Ports ── -->
             <template x-if="tab === 'ports'">
               <div>
@@ -1711,6 +1812,10 @@
         { label: '7d', hours: 168 },
       ],
 
+      // ── UPS shutdown plan ─────────────────────────────────────────────────
+      shutdownRules:   [],
+      shutdownAddTarget: '',
+
       // ── Add-device modal: requirements tooltip + active preflight ─────────
       // adapterRequirements is the static metadata served by
       // /api/adapter-requirements. Loaded once at app init.
@@ -1905,6 +2010,69 @@
           } else {
             this.showToast('Failed to revoke key', 'error');
           }
+        });
+      },
+
+      // ── UPS shutdown plan ─────────────────────────────────────────────────
+      async loadShutdownRules() {
+        if (!this.selectedId) return;
+        try {
+          const r = await fetch(`/api/devices/${this.selectedId}/shutdown-rules`);
+          if (!r.ok) return;
+          const rules = await r.json();
+          // Editable helper fields: charge as-is, runtime shown in minutes.
+          rules.forEach(x => {
+            x._charge = x.trigger_charge_pct ?? '';
+            x._runtimeMin = x.trigger_runtime_sec != null ? Math.round(x.trigger_runtime_sec / 60) : '';
+          });
+          this.shutdownRules = rules;
+        } catch (e) { /* leave as-is */ }
+      },
+
+      async addShutdownTarget() {
+        if (!this.shutdownAddTarget) return;
+        const r = await fetch(`/api/devices/${this.selectedId}/shutdown-rules`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({
+            target_device_id: parseInt(this.shutdownAddTarget, 10),
+            action: 'graceful_shutdown',
+            trigger_charge_pct: 20,   // sensible default; user adjusts
+            trigger_runtime_sec: null,
+            enabled: true,
+          }),
+        });
+        if (r.ok) {
+          this.shutdownAddTarget = '';
+          await this.loadShutdownRules();
+          this.showToast('Added to shutdown plan');
+        } else {
+          const d = await r.json().catch(() => ({}));
+          this.showToast(d.detail || 'Failed to add device', 'error');
+        }
+      },
+
+      async updateShutdownRule(rule) {
+        const charge = (rule._charge === '' || rule._charge == null) ? null : parseInt(rule._charge, 10);
+        const runMin = (rule._runtimeMin === '' || rule._runtimeMin == null) ? null : Math.max(0, parseInt(rule._runtimeMin, 10));
+        await fetch(`/api/shutdown-rules/${rule.id}`, {
+          method:  'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({
+            action: rule.action,
+            trigger_charge_pct: isNaN(charge) ? null : charge,
+            trigger_runtime_sec: (runMin == null || isNaN(runMin)) ? null : runMin * 60,
+            enabled: rule.enabled,
+          }),
+        });
+        await this.loadShutdownRules();
+      },
+
+      deleteShutdownRule(rule) {
+        this.confirm(`Remove "${rule.target_name}" from the shutdown plan?`, async () => {
+          const r = await fetch(`/api/shutdown-rules/${rule.id}`, { method: 'DELETE' });
+          if (r.ok) { await this.loadShutdownRules(); this.showToast('Removed from plan'); }
+          else { this.showToast('Failed to remove', 'error'); }
         });
       },
 
@@ -2580,6 +2748,14 @@
         return this.selectedDevice?.adapter_type === 'usbups';
       },
 
+      // Devices eligible to add to this UPS's shutdown plan: anything that
+      // isn't this UPS, isn't another UPS, and isn't already in the plan.
+      get shutdownCandidates() {
+        const have = new Set(this.shutdownRules.map(r => r.target_device_id));
+        return this.devices.filter(d =>
+          d.id !== this.selectedId && d.device_type !== 'ups' && !have.has(d.id));
+      },
+
       get deviceGroups() {
         const groups = {};
         for (const d of this.devices) {
@@ -2615,6 +2791,7 @@
         if (this.isUps) return [
           { id: 'overview', label: 'Overview', icon: 'fa-solid fa-gauge' },
           { id: 'graphs',   label: 'Graphs',   icon: 'fa-solid fa-chart-line' },
+          { id: 'shutdown', label: 'Shutdown', icon: 'fa-solid fa-power-off' },
         ];
         return [{ id: 'overview', label: 'Overview', icon: 'fa-solid fa-gauge' }];
       },

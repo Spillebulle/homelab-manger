@@ -30,6 +30,21 @@ class ApiKeyCreate(BaseModel):
     name: Optional[str] = None
 
 
+class ShutdownRuleCreate(BaseModel):
+    target_device_id: int
+    action: str = "graceful_shutdown"
+    trigger_charge_pct: Optional[int] = None
+    trigger_runtime_sec: Optional[int] = None
+    enabled: bool = True
+
+
+class ShutdownRuleUpdate(BaseModel):
+    action: Optional[str] = None
+    trigger_charge_pct: Optional[int] = None
+    trigger_runtime_sec: Optional[int] = None
+    enabled: Optional[bool] = None
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str

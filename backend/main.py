@@ -17,10 +17,10 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from . import __version__ as APP_VERSION
 from .database import get_db, init_db
-from .models import Device, DeviceCache, DeviceMetric, AuthUser, ApiKey
+from .models import Device, DeviceCache, DeviceMetric, AuthUser, ApiKey, ShutdownRule
 from .schemas import (
     DeviceCreate, DeviceUpdate, LoginRequest, ChangePasswordRequest,
-    PreflightRequest, ApiKeyCreate,
+    PreflightRequest, ApiKeyCreate, ShutdownRuleCreate, ShutdownRuleUpdate,
 )
 from . import poller
 from .adapters import get_adapter
@@ -322,8 +322,101 @@ def update_device(device_id: int, body: DeviceUpdate, db: Session = Depends(get_
 @api.delete("/devices/{device_id}")
 def delete_device(device_id: int, db: Session = Depends(get_db)):
     d = _device_or_404(device_id, db)
+    # SQLite FK cascade isn't enforced (PRAGMA foreign_keys is off), so clean up
+    # dependent rows explicitly: cache, time-series, and any shutdown rules that
+    # reference this device as either the UPS or the target.
     db.query(DeviceCache).filter(DeviceCache.device_id == device_id).delete()
+    db.query(DeviceMetric).filter(DeviceMetric.device_id == device_id).delete()
+    db.query(ShutdownRule).filter(
+        (ShutdownRule.ups_device_id == device_id)
+        | (ShutdownRule.target_device_id == device_id)
+    ).delete(synchronize_session=False)
     db.delete(d)
+    db.commit()
+    return {"ok": True}
+
+
+# ── Shutdown rules (Phase-2 outage orchestration) ────────────────────────────
+#
+# Rules live under a UPS and target another device. The poller evaluates them
+# after each UPS poll (see poller._evaluate_shutdown_rules) — these endpoints
+# are just CRUD. Actions are pass-through to the target adapter's
+# execute_action, so the available actions depend on the target.
+
+_SHUTDOWN_ACTIONS = {"graceful_shutdown", "power_off", "power_cycle", "hard_reset"}
+
+
+def _serialize_rule(r: ShutdownRule, db: Session) -> dict:
+    t = db.query(Device).filter(Device.id == r.target_device_id).first()
+    return {
+        "id": r.id,
+        "ups_device_id": r.ups_device_id,
+        "target_device_id": r.target_device_id,
+        "target_name": t.name if t else f"(deleted #{r.target_device_id})",
+        "target_type": t.device_type if t else None,
+        "target_adapter": t.adapter_type if t else None,
+        "action": r.action,
+        "trigger_charge_pct": r.trigger_charge_pct,
+        "trigger_runtime_sec": r.trigger_runtime_sec,
+        "enabled": r.enabled,
+        "last_triggered_at": r.last_triggered_at.isoformat() if r.last_triggered_at else None,
+    }
+
+
+@api.get("/devices/{ups_id}/shutdown-rules")
+def list_shutdown_rules(ups_id: int, db: Session = Depends(get_db)):
+    _device_or_404(ups_id, db)
+    rules = (db.query(ShutdownRule)
+             .filter(ShutdownRule.ups_device_id == ups_id)
+             .order_by(ShutdownRule.id).all())
+    return [_serialize_rule(r, db) for r in rules]
+
+
+@api.post("/devices/{ups_id}/shutdown-rules", status_code=201)
+def create_shutdown_rule(ups_id: int, body: ShutdownRuleCreate, db: Session = Depends(get_db)):
+    _device_or_404(ups_id, db)
+    _device_or_404(body.target_device_id, db)
+    if body.target_device_id == ups_id:
+        raise HTTPException(status_code=400, detail="A UPS can't target itself")
+    if db.query(ShutdownRule).filter(
+        ShutdownRule.ups_device_id == ups_id,
+        ShutdownRule.target_device_id == body.target_device_id,
+    ).first():
+        raise HTTPException(status_code=409, detail="A rule for that device already exists")
+    rule = ShutdownRule(
+        ups_device_id=ups_id, target_device_id=body.target_device_id,
+        action=body.action if body.action in _SHUTDOWN_ACTIONS else "graceful_shutdown",
+        trigger_charge_pct=body.trigger_charge_pct,
+        trigger_runtime_sec=body.trigger_runtime_sec, enabled=body.enabled,
+    )
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    return _serialize_rule(rule, db)
+
+
+@api.put("/shutdown-rules/{rule_id}")
+def update_shutdown_rule(rule_id: int, body: ShutdownRuleUpdate, db: Session = Depends(get_db)):
+    r = db.query(ShutdownRule).filter(ShutdownRule.id == rule_id).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    data = body.model_dump(exclude_unset=True)
+    if "action" in data and data["action"] not in _SHUTDOWN_ACTIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported action {data['action']!r}")
+    for field, value in data.items():
+        setattr(r, field, value)
+    # Any edit re-arms the rule so a changed threshold takes effect cleanly.
+    r.last_triggered_at = None
+    db.commit()
+    return _serialize_rule(r, db)
+
+
+@api.delete("/shutdown-rules/{rule_id}")
+def delete_shutdown_rule(rule_id: int, db: Session = Depends(get_db)):
+    r = db.query(ShutdownRule).filter(ShutdownRule.id == rule_id).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    db.delete(r)
     db.commit()
     return {"ok": True}
 
