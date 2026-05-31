@@ -1246,7 +1246,7 @@
                     <div class="flex items-center gap-2">
                       <span class="font-mono text-gray-200" x-text="req.service"></span>
                       <span class="text-gray-500" x-text="'/' + (req.transport || '?')"></span>
-                      <span class="text-gray-400 font-mono" x-text="':' + req.port"></span>
+                      <span class="text-gray-400 font-mono" x-show="req.port" x-text="':' + req.port"></span>
                       <span x-show="!req.required"
                             class="ml-auto text-[10px] uppercase text-amber-300 tracking-wide">optional</span>
                     </div>

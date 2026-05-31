@@ -342,9 +342,24 @@ class USBUPSAdapter(BaseAdapter):
             "service": "USB HID Power Device",
             "transport": "usb",
             "port": 0,
-            "description": "UPS connected by USB to the host; the container must "
-                           "have the USB device passed through (--device) and "
-                           "permission to open its hidraw node.",
+            "description": "The UPS must be USB-connected to the Docker host and "
+                           "speak the standard HID Power Device class (NUT's "
+                           "usbhid-ups). Leave VID/PID blank to auto-detect.",
+            "required": True,
+        },
+        {
+            "service": "Container USB access",
+            "transport": "docker",
+            "port": 0,
+            "description": "Run the container with the host USB tree exposed and "
+                           "privilege to open/reset it. Recommended flags: "
+                           "-v /dev/bus/usb:/dev/bus/usb  "
+                           "--device-cgroup-rule='c 189:* rmw'   (or --privileged). "
+                           "Use a bind mount (-v), NOT --device: it keeps the UPS "
+                           "visible after a USB re-enumeration, which otherwise "
+                           "drops it offline until restart. Root in the container "
+                           "(the default) is needed to open the hidraw node, "
+                           "disable USB autosuspend, and issue a USB reset.",
             "required": True,
         },
     ]
