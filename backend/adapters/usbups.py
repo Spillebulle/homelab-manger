@@ -27,6 +27,8 @@ rule on the host). See the Dockerfile and CLAUDE.md.
 """
 import asyncio
 import logging
+import os
+import sys
 import threading
 import time
 from typing import Any
@@ -34,6 +36,65 @@ from typing import Any
 from .base import BaseAdapter
 
 logger = logging.getLogger(__name__)
+
+
+def _usb_reset_by_id(vid: int, pid: int) -> bool:
+    """Best-effort USBDEVFS_RESET of the device matching vid:pid (Linux only).
+
+    Cheap UPS USB stacks (Phoenixtec/Voltronic) periodically wedge under
+    continuous polling and stop accepting `open`. A bus-level reset forces the
+    device to re-initialise — the same recovery NUT relies on. Returns True if
+    a reset ioctl was issued. Fully guarded: any failure (not Linux, no usbfs
+    access, device not present) just returns False so the caller falls back to
+    plain retries. Requires the container to see /dev/bus/usb (bind-mount, not
+    a static --device, so re-enumerated nodes remain visible) and privilege to
+    ioctl it."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        import fcntl
+    except ImportError:
+        return False
+    USBDEVFS_RESET = (ord("U") << 8) | 20   # _IO('U', 20)
+    base = "/sys/bus/usb/devices"
+    try:
+        entries = os.listdir(base)
+    except OSError:
+        return False
+    for entry in entries:
+        d = os.path.join(base, entry)
+        try:
+            with open(os.path.join(d, "idVendor")) as f:
+                v = int(f.read().strip(), 16)
+            with open(os.path.join(d, "idProduct")) as f:
+                p = int(f.read().strip(), 16)
+        except (OSError, ValueError):
+            continue
+        if v != vid or p != pid:
+            continue
+        try:
+            with open(os.path.join(d, "busnum")) as f:
+                bus = int(f.read().strip())
+            with open(os.path.join(d, "devnum")) as f:
+                dev = int(f.read().strip())
+        except (OSError, ValueError):
+            continue
+        node = f"/dev/bus/usb/{bus:03d}/{dev:03d}"
+        try:
+            fd = os.open(node, os.O_WRONLY)
+        except OSError as exc:
+            logger.warning("USB reset: cannot open %s (%s) — is /dev/bus/usb "
+                           "bind-mounted with device-cgroup access?", node, exc)
+            return False
+        try:
+            fcntl.ioctl(fd, USBDEVFS_RESET, 0)
+            return True
+        except OSError as exc:
+            logger.warning("USB reset ioctl on %s failed: %s", node, exc)
+            return False
+        finally:
+            os.close(fd)
+    return False
 
 # The hidraw node is effectively single-open. Each poll cycle builds a fresh
 # adapter instance, so a per-instance lock can't serialize a scheduled poll
@@ -396,7 +457,16 @@ class USBUPSAdapter(BaseAdapter):
                     return self._read_from_device(dev, vid, pid)
                 except Exception as exc:
                     last_exc = exc
-                    time.sleep(0.3)
+                    # `dev is None` ⇒ the OPEN failed (vs a mid-read error). If
+                    # opens keep failing the device is likely wedged — issue a
+                    # USB reset once (after the first failure) to kick it back,
+                    # then give it a moment to re-enumerate before retrying.
+                    if dev is None and attempt == 1 and _usb_reset_by_id(self.vid, self.pid):
+                        logger.warning("USB UPS unresponsive — issued USBDEVFS_RESET "
+                                       "on %04x:%04x", self.vid, self.pid)
+                        time.sleep(1.5)
+                    else:
+                        time.sleep(0.3)
                 finally:
                     if dev is not None:
                         try:
