@@ -132,6 +132,12 @@ _USB_LOCK = threading.Lock()
 # value reads (fewer USB transfers, fewer chances for a transient read error).
 _FIELDS_CACHE: dict[tuple[int, int], list] = {}
 
+# A USBDEVFS_RESET forces re-enumeration, so it must be RARE — issuing one
+# every failed poll (~30s) is a reset storm that never lets the device settle
+# and churns its devnum. Cap to one reset per device per cooldown window.
+_RESET_COOLDOWN = 300  # seconds
+_LAST_USB_RESET: dict[tuple[int, int], float] = {}
+
 # ── Canonical HID Power Device usage codes (page << 16 | selector) ────────────
 # Values from NUT's drivers/usbhid-ups.c `usage_lkp[]`. Do NOT swap these for
 # the numbers some online "usb hid usage" tables list (e.g. PercentLoad 0x45,
@@ -503,11 +509,18 @@ class USBUPSAdapter(BaseAdapter):
                     last_exc = exc
                     # `dev is None` ⇒ the OPEN failed (vs a mid-read error). If
                     # opens keep failing the device is likely wedged — issue a
-                    # USB reset once (after the first failure) to kick it back,
-                    # then give it a moment to re-enumerate before retrying.
-                    if dev is None and attempt == 1 and _usb_reset_by_id(self.vid, self.pid):
-                        logger.warning("USB UPS unresponsive — issued USBDEVFS_RESET "
-                                       "on %04x:%04x", self.vid, self.pid)
+                    # USB reset to kick it back, but only once per cooldown so
+                    # we don't storm it (a reset re-enumerates the device, so
+                    # doing it every poll churns the devnum and never recovers).
+                    key = (self.vid, self.pid)
+                    now = time.monotonic()
+                    if (dev is None and attempt == 1
+                            and now - _LAST_USB_RESET.get(key, -1e9) >= _RESET_COOLDOWN
+                            and _usb_reset_by_id(self.vid, self.pid)):
+                        _LAST_USB_RESET[key] = now
+                        logger.warning("USB UPS unresponsive — issued USBDEVFS_RESET on "
+                                       "%04x:%04x (rate-limited to once / %ds)",
+                                       self.vid, self.pid, _RESET_COOLDOWN)
                         time.sleep(1.5)
                     else:
                         time.sleep(0.3)

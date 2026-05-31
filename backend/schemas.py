@@ -45,6 +45,14 @@ class ShutdownRuleUpdate(BaseModel):
     enabled: Optional[bool] = None
 
 
+class NotificationConfigUpdate(BaseModel):
+    webhook_url: Optional[str] = None
+    enabled: Optional[bool] = None
+    notify_offline: Optional[bool] = None
+    notify_ups_state: Optional[bool] = None
+    notify_action: Optional[bool] = None
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str

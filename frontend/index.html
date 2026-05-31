@@ -364,6 +364,21 @@
                   </div>
                 </template>
 
+                <!-- Last action + log -->
+                <div class="flex items-center justify-between bg-card border border-border rounded-lg px-4 py-2.5 mb-4">
+                  <div class="text-sm min-w-0">
+                    <span class="text-gray-500">Last action: </span>
+                    <template x-if="shutdownLastAction">
+                      <span class="text-gray-200" x-text="shutdownLastAction.title + ' · ' + relTime(shutdownLastAction.ts)"></span>
+                    </template>
+                    <span x-show="!shutdownLastAction" class="text-gray-500 italic">none yet</span>
+                  </div>
+                  <button @click="openEventsModal(selectedId, null, (selectedDevice?.name || 'UPS') + ' — event log')"
+                          class="btn-secondary text-xs whitespace-nowrap">
+                    <i class="fa-solid fa-clock-rotate-left mr-1"></i>View log
+                  </button>
+                </div>
+
                 <!-- Add a device -->
                 <div class="flex gap-2 mb-4">
                   <select x-model="shutdownAddTarget" class="input flex-1">
@@ -436,6 +451,52 @@
                       </template>
                     </tbody>
                   </table>
+                </div>
+              </div>
+            </template>
+
+            <!-- ── Notifications ── -->
+            <template x-if="tab === 'notifications'">
+              <div x-init="$nextTick(() => loadNotifications())" class="max-w-xl">
+                <p class="text-sm text-gray-400 mb-4">
+                  Send alerts to a Discord webhook for events on this device.
+                </p>
+                <label class="flex items-center gap-2 mb-4 text-sm text-gray-200">
+                  <input type="checkbox" x-model="notif.enabled" class="w-4 h-4 accent-blue-500">
+                  Enable notifications for this device
+                </label>
+                <div class="mb-4">
+                  <label class="label">Discord webhook URL</label>
+                  <input x-model="notif.webhook_url" type="url" class="input w-full"
+                         placeholder="https://discord.com/api/webhooks/…">
+                </div>
+                <div class="space-y-2 mb-5">
+                  <div class="text-xs text-gray-500 uppercase tracking-wide">Notify on</div>
+                  <label class="flex items-center gap-2 text-sm text-gray-300">
+                    <input type="checkbox" x-model="notif.notify_offline" class="w-4 h-4 accent-blue-500">
+                    Device goes offline / comes back online
+                  </label>
+                  <template x-if="isUps">
+                    <label class="flex items-center gap-2 text-sm text-gray-300">
+                      <input type="checkbox" x-model="notif.notify_ups_state" class="w-4 h-4 accent-blue-500">
+                      UPS state changes (on battery / low / restored)
+                    </label>
+                  </template>
+                  <template x-if="isUps">
+                    <label class="flex items-center gap-2 text-sm text-gray-300">
+                      <input type="checkbox" x-model="notif.notify_action" class="w-4 h-4 accent-blue-500">
+                      A shutdown action is triggered
+                    </label>
+                  </template>
+                </div>
+                <div class="flex gap-2">
+                  <button @click="saveNotifications()" :disabled="notif.busy" class="btn-primary">
+                    <i class="fa-solid fa-floppy-disk mr-1"></i>Save
+                  </button>
+                  <button @click="testNotification()" :disabled="notif.busy || !notif.webhook_url"
+                          class="btn-secondary disabled:opacity-50">
+                    <i class="fa-solid fa-paper-plane mr-1"></i>Send test
+                  </button>
                 </div>
               </div>
             </template>
@@ -1689,6 +1750,44 @@
     </div>
   </div>
 
+  <!-- ── Event Log Modal ───────────────────────────────────────────────────── -->
+  <div x-show="eventsModal.show" x-transition class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+    <div @click.stop class="bg-panel border border-border rounded-xl w-full max-w-2xl shadow-2xl flex flex-col" style="max-height:80vh">
+      <div class="px-6 py-4 border-b border-border flex items-center justify-between">
+        <h2 class="font-semibold text-white">
+          <i class="fa-solid fa-clock-rotate-left mr-1.5"></i><span x-text="eventsModal.title"></span>
+        </h2>
+        <button @click="eventsModal.show = false" class="text-gray-400 hover:text-white">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+      <div class="p-4 overflow-y-auto">
+        <div x-show="!eventsModal.events.length" class="text-sm text-gray-500 text-center py-8">
+          No events recorded yet.
+        </div>
+        <div class="divide-y divide-border">
+          <template x-for="e in eventsModal.events" :key="e.id">
+            <div class="flex items-start gap-3 py-2.5">
+              <span class="mt-1 w-2 h-2 rounded-full shrink-0"
+                    :class="{'bg-blue-400': e.severity==='info','bg-yellow-400': e.severity==='warning','bg-red-500': e.severity==='critical'}"></span>
+              <div class="flex-1 min-w-0">
+                <div class="text-sm text-gray-200" x-text="e.title"></div>
+                <div x-show="e.detail" class="text-xs text-gray-500 break-words" x-text="e.detail"></div>
+              </div>
+              <div class="text-[11px] text-gray-500 whitespace-nowrap text-right shrink-0">
+                <div x-text="fmtDateTime(e.ts)"></div>
+                <div x-text="relTime(e.ts)"></div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+      <div class="px-6 py-3 border-t border-border flex justify-end">
+        <button @click="eventsModal.show = false" class="btn-secondary">Close</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Port VLAN-membership popup ────────────────────────────────────────── -->
   <div x-show="selectedPort && vlanList.length && isSwitch && tab === 'ports'" x-transition.opacity
        @click.self="selectedPort = null"
@@ -1815,6 +1914,12 @@
       // ── UPS shutdown plan ─────────────────────────────────────────────────
       shutdownRules:   [],
       shutdownAddTarget: '',
+      shutdownLastAction: null,
+
+      // ── events log + notifications ────────────────────────────────────────
+      eventsModal: { show: false, events: [], title: '' },
+      notif: { webhook_url: '', enabled: true, notify_offline: true,
+               notify_ups_state: true, notify_action: true, busy: false },
 
       // ── Add-device modal: requirements tooltip + active preflight ─────────
       // adapterRequirements is the static metadata served by
@@ -2027,6 +2132,67 @@
           });
           this.shutdownRules = rules;
         } catch (e) { /* leave as-is */ }
+        // Most-recent action event for the "Last action" line.
+        try {
+          const r = await fetch(`/api/events?device_id=${this.selectedId}&event_type=action&limit=1`);
+          if (r.ok) { const a = await r.json(); this.shutdownLastAction = a[0] || null; }
+        } catch (e) { /* ignore */ }
+      },
+
+      async openEventsModal(deviceId, eventType, title) {
+        this.eventsModal = { show: true, events: [], title: title || 'Event log' };
+        const params = new URLSearchParams({ limit: '200' });
+        if (deviceId != null) params.set('device_id', deviceId);
+        if (eventType) params.set('event_type', eventType);
+        try {
+          const r = await fetch('/api/events?' + params.toString());
+          if (r.ok) this.eventsModal.events = await r.json();
+        } catch (e) { this.showToast('Failed to load events', 'error'); }
+      },
+
+      // ── notifications ─────────────────────────────────────────────────────
+      async loadNotifications() {
+        if (!this.selectedId) return;
+        try {
+          const r = await fetch(`/api/devices/${this.selectedId}/notifications`);
+          if (r.ok) {
+            const c = await r.json();
+            this.notif = { ...c, busy: false };
+          }
+        } catch (e) { /* leave defaults */ }
+      },
+
+      async saveNotifications() {
+        this.notif.busy = true;
+        try {
+          const r = await fetch(`/api/devices/${this.selectedId}/notifications`, {
+            method:  'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({
+              webhook_url:      this.notif.webhook_url,
+              enabled:          this.notif.enabled,
+              notify_offline:   this.notif.notify_offline,
+              notify_ups_state: this.notif.notify_ups_state,
+              notify_action:    this.notif.notify_action,
+            }),
+          });
+          this.showToast(r.ok ? 'Notification settings saved' : 'Failed to save', r.ok ? 'success' : 'error');
+        } finally {
+          this.notif.busy = false;
+        }
+      },
+
+      async testNotification() {
+        this.notif.busy = true;
+        try {
+          // Save first so the test uses the current webhook/toggles.
+          await this.saveNotifications();
+          const r = await fetch(`/api/devices/${this.selectedId}/notifications/test`, { method: 'POST' });
+          if (r.ok) this.showToast('Test sent — check Discord');
+          else { const d = await r.json().catch(() => ({})); this.showToast(d.detail || 'Test failed', 'error'); }
+        } finally {
+          this.notif.busy = false;
+        }
       },
 
       async addShutdownTarget() {
@@ -2766,12 +2932,14 @@
       },
 
       get availableTabs() {
+        const notif = { id: 'notifications', label: 'Notifications', icon: 'fa-solid fa-bell' };
         if (this.isSwitch) return [
           { id: 'overview',  label: 'Overview',  icon: 'fa-solid fa-gauge' },
           { id: 'ports',     label: 'Ports',     icon: 'fa-solid fa-network-wired' },
           { id: 'connected', label: 'Connected', icon: 'fa-solid fa-plug' },
           { id: 'poe',       label: 'PoE',       icon: 'fa-solid fa-bolt' },
           { id: 'vlans',     label: 'VLANs',     icon: 'fa-solid fa-sitemap' },
+          notif,
         ];
         if (this.isServer) {
           const tabs = [
@@ -2786,14 +2954,16 @@
           if (['cimc', 'cimc_redfish', 'ibmc'].includes(this.selectedDevice?.adapter_type)) {
             tabs.push({ id: 'kvm', label: 'Console', icon: 'fa-solid fa-display' });
           }
+          tabs.push(notif);
           return tabs;
         }
         if (this.isUps) return [
           { id: 'overview', label: 'Overview', icon: 'fa-solid fa-gauge' },
           { id: 'graphs',   label: 'Graphs',   icon: 'fa-solid fa-chart-line' },
           { id: 'shutdown', label: 'Shutdown', icon: 'fa-solid fa-power-off' },
+          notif,
         ];
-        return [{ id: 'overview', label: 'Overview', icon: 'fa-solid fa-gauge' }];
+        return [{ id: 'overview', label: 'Overview', icon: 'fa-solid fa-gauge' }, notif];
       },
 
       typeLabel(t) {
@@ -3059,7 +3229,16 @@
         const diff = Date.now() - new Date(iso).getTime();
         if (diff < 60000)  return 'just now';
         if (diff < 3600000) return Math.floor(diff/60000)+'m ago';
-        return Math.floor(diff/3600000)+'h ago';
+        if (diff < 86400000) return Math.floor(diff/3600000)+'h ago';
+        return Math.floor(diff/86400000)+'d ago';
+      },
+
+      // Absolute local timestamp for the event log (e.g. "Jun 1, 12:03").
+      fmtDateTime(iso) {
+        if (!iso) return '';
+        const d = new Date(iso);
+        return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ', ' +
+               d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       },
     }
   }

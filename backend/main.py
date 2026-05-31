@@ -17,11 +17,16 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from . import __version__ as APP_VERSION
 from .database import get_db, init_db
-from .models import Device, DeviceCache, DeviceMetric, AuthUser, ApiKey, ShutdownRule
+from .models import (
+    Device, DeviceCache, DeviceMetric, AuthUser, ApiKey, ShutdownRule,
+    Event, NotificationConfig,
+)
 from .schemas import (
     DeviceCreate, DeviceUpdate, LoginRequest, ChangePasswordRequest,
     PreflightRequest, ApiKeyCreate, ShutdownRuleCreate, ShutdownRuleUpdate,
+    NotificationConfigUpdate,
 )
+from . import events as events_mod
 from . import poller
 from .adapters import get_adapter
 from .adapters import oui as oui_db
@@ -331,9 +336,98 @@ def delete_device(device_id: int, db: Session = Depends(get_db)):
         (ShutdownRule.ups_device_id == device_id)
         | (ShutdownRule.target_device_id == device_id)
     ).delete(synchronize_session=False)
+    db.query(NotificationConfig).filter(
+        NotificationConfig.device_id == device_id).delete(synchronize_session=False)
+    # Keep the event history (device_name is denormalised), just detach it.
+    db.query(Event).filter(Event.device_id == device_id).update(
+        {Event.device_id: None}, synchronize_session=False)
     db.delete(d)
     db.commit()
     return {"ok": True}
+
+
+# ── Events (log) + notifications ─────────────────────────────────────────────
+
+@api.get("/events")
+def list_events(device_id: int | None = None, event_type: str | None = None,
+                limit: int = 100, db: Session = Depends(get_db)):
+    """Recent events, newest first. Optional filters by device and type."""
+    q = db.query(Event)
+    if device_id is not None:
+        q = q.filter(Event.device_id == device_id)
+    if event_type:
+        q = q.filter(Event.event_type == event_type)
+    rows = q.order_by(Event.id.desc()).limit(max(1, min(limit, 1000))).all()
+    return [
+        {
+            "id": e.id,
+            "ts": e.ts.isoformat() if e.ts else None,
+            "device_id": e.device_id,
+            "device_name": e.device_name,
+            "event_type": e.event_type,
+            "severity": e.severity,
+            "title": e.title,
+            "detail": e.detail,
+        }
+        for e in rows
+    ]
+
+
+def _serialize_notif(cfg: NotificationConfig) -> dict:
+    return {
+        "device_id": cfg.device_id,
+        "webhook_url": cfg.webhook_url or "",
+        "enabled": cfg.enabled,
+        "notify_offline": cfg.notify_offline,
+        "notify_ups_state": cfg.notify_ups_state,
+        "notify_action": cfg.notify_action,
+    }
+
+
+def _get_or_create_notif(device_id: int, db: Session) -> NotificationConfig:
+    cfg = (db.query(NotificationConfig)
+           .filter(NotificationConfig.device_id == device_id).first())
+    if cfg is None:
+        cfg = NotificationConfig(device_id=device_id)
+        db.add(cfg)
+        db.commit()
+        db.refresh(cfg)
+    return cfg
+
+
+@api.get("/devices/{device_id}/notifications")
+def get_notifications(device_id: int, db: Session = Depends(get_db)):
+    _device_or_404(device_id, db)
+    return _serialize_notif(_get_or_create_notif(device_id, db))
+
+
+@api.put("/devices/{device_id}/notifications")
+def update_notifications(device_id: int, body: NotificationConfigUpdate,
+                         db: Session = Depends(get_db)):
+    _device_or_404(device_id, db)
+    cfg = _get_or_create_notif(device_id, db)
+    for field, value in body.model_dump(exclude_unset=True).items():
+        if field == "webhook_url" and value is not None:
+            value = value.strip() or None
+        setattr(cfg, field, value)
+    db.commit()
+    return _serialize_notif(cfg)
+
+
+@api.post("/devices/{device_id}/notifications/test")
+async def test_notification(device_id: int, db: Session = Depends(get_db)):
+    d = _device_or_404(device_id, db)
+    cfg = _get_or_create_notif(device_id, db)
+    if not cfg.webhook_url:
+        raise HTTPException(status_code=400, detail="No webhook URL configured")
+    ok, note = await events_mod.post_discord(
+        cfg.webhook_url, f"Test notification — {d.name}",
+        "If you can read this, HomeLab-Manger notifications are working.",
+        "info", d.name,
+    )
+    if not ok:
+        raise HTTPException(status_code=502, detail=note)
+    return {"ok": True, "detail": note}
 
 
 # ── Shutdown rules (Phase-2 outage orchestration) ────────────────────────────

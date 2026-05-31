@@ -107,6 +107,39 @@ class AuthUser(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class Event(Base):
+    """Append-only event log: UPS state changes, device offline/online
+    transitions, and shutdown actions. Feeds both the in-UI history and the
+    notification dispatcher. Pruned by count so it can't grow unbounded."""
+    __tablename__ = "events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ts = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    device_id = Column(Integer, ForeignKey("devices.id", ondelete="CASCADE"),
+                       nullable=True, index=True)
+    device_name = Column(String(255), nullable=True)   # denormalised so log survives device deletion
+    event_type = Column(String(40), nullable=False)    # ups_on_battery | ups_low | ups_online | device_offline | device_online | action
+    severity = Column(String(16), nullable=False, default="info")  # info | warning | critical
+    title = Column(String(255), nullable=False)
+    detail = Column(Text, nullable=True)
+
+
+class NotificationConfig(Base):
+    """Per-device notification settings. One row per device. Currently a single
+    Discord webhook + per-event-type toggles; the webhook is stored plaintext
+    (it's a capability URL, not a password — homelab stance, same as the rest)."""
+    __tablename__ = "notification_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(Integer, ForeignKey("devices.id", ondelete="CASCADE"),
+                       nullable=False, unique=True, index=True)
+    webhook_url = Column(Text, nullable=True)          # Discord webhook
+    enabled = Column(Boolean, default=True)
+    notify_offline = Column(Boolean, default=True)     # device offline/online transitions
+    notify_ups_state = Column(Boolean, default=True)   # UPS on-battery / low / restored
+    notify_action = Column(Boolean, default=True)      # shutdown action fired
+
+
 class ShutdownRule(Base):
     """Phase-2 outage orchestration. One rule = "when UPS X is on battery and a
     threshold is crossed, run <action> on target device Y". Rules are owned by a
