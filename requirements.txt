@@ -10,3 +10,4 @@ python-multipart>=0.0.9
 pyghmi>=1.5.0
 bcrypt>=4.1.0
 itsdangerous>=2.2.0
+hidapi>=0.14.0

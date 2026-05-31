@@ -21,6 +21,9 @@
       }
     }
   </script>
+  <!-- Chart.js for the UPS history graphs (load/dash among device tabs). Loaded
+       non-defer so it's available by the time the UPS tab initialises. -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.5/dist/cdn.min.js"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
   <style>
@@ -231,6 +234,97 @@
                     </template>
                   </div>
                 </template>
+
+                <!-- UPS overview -->
+                <template x-if="isUps && detail.status">
+                  <div>
+                    <!-- State banner -->
+                    <div class="rounded-lg p-4 mb-4 border flex items-center gap-3"
+                         :class="upsStateClass(detail.status.state)">
+                      <i class="fa-solid text-xl"
+                         :class="detail.status.state === 'online' ? 'fa-plug-circle-check' : 'fa-battery-quarter'"></i>
+                      <div>
+                        <div class="text-lg font-semibold" x-text="detail.status.state_label"></div>
+                        <div class="text-xs opacity-80"
+                             x-text="(detail.status.mfr || '') + ' ' + (detail.status.model || '') + (detail.status.serial ? ' · S/N ' + detail.status.serial : '')"></div>
+                      </div>
+                    </div>
+                    <!-- Metric cards -->
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-2">
+                      <div class="bg-card border border-border rounded-lg p-4">
+                        <div class="text-xs text-gray-500 mb-1">Charge</div>
+                        <div class="text-2xl font-semibold text-white" x-text="fmtPct(detail.status.charge_pct)"></div>
+                      </div>
+                      <div class="bg-card border border-border rounded-lg p-4">
+                        <div class="text-xs text-gray-500 mb-1">Runtime remaining</div>
+                        <div class="text-2xl font-semibold text-white" x-text="detail.status.runtime_text || '—'"></div>
+                      </div>
+                      <div class="bg-card border border-border rounded-lg p-4">
+                        <div class="text-xs text-gray-500 mb-1">Load</div>
+                        <div class="text-2xl font-semibold text-white" x-text="fmtPct(detail.status.load_pct)"></div>
+                      </div>
+                      <div class="bg-card border border-border rounded-lg p-4">
+                        <div class="text-xs text-gray-500 mb-1">Power draw</div>
+                        <div class="text-2xl font-semibold text-white"
+                             x-text="detail.status.watts != null ? detail.status.watts + ' W' : '—'"></div>
+                      </div>
+                    </div>
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs text-gray-400">
+                      <div class="px-1" x-show="detail.status.input_voltage != null">
+                        Input: <span class="text-gray-200" x-text="detail.status.input_voltage + ' V'"></span>
+                      </div>
+                      <div class="px-1" x-show="detail.status.battery_voltage != null">
+                        Battery: <span class="text-gray-200" x-text="detail.status.battery_voltage + ' V'"></span>
+                      </div>
+                      <div class="px-1" x-show="detail.status.usb">
+                        USB: <span class="text-gray-200 font-mono" x-text="detail.status.usb"></span>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+                <template x-if="isUps && !detail.status && detail.status_error">
+                  <div class="bg-red-900/30 border border-red-700 rounded-lg p-4 text-sm text-red-300">
+                    <i class="fa-solid fa-triangle-exclamation mr-1"></i>
+                    <span x-text="detail.status_error"></span>
+                  </div>
+                </template>
+              </div>
+            </template>
+
+            <!-- ── UPS Graphs ── -->
+            <template x-if="tab === 'graphs'">
+              <div x-init="$nextTick(() => initUpsGraphs())">
+                <div class="flex items-center justify-between mb-4">
+                  <span class="text-sm text-gray-400">Power history</span>
+                  <div class="flex gap-1 text-xs">
+                    <template x-for="r in upsRanges" :key="r.hours">
+                      <button @click="upsRangeHours = r.hours; loadUpsHistory()"
+                              :class="upsRangeHours === r.hours ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'"
+                              class="px-2.5 py-1 rounded transition-colors" x-text="r.label"></button>
+                    </template>
+                  </div>
+                </div>
+                <div x-show="upsHistoryEmpty" class="text-sm text-gray-500 bg-card border border-border rounded-lg p-6 text-center">
+                  No samples yet — graphs populate as the poller collects data (one sample per minute).
+                </div>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <div class="bg-card border border-border rounded-lg p-4">
+                    <div class="text-xs text-gray-400 mb-2">Load (%) &amp; Power (W)</div>
+                    <div class="h-56"><canvas id="upsChartPower"></canvas></div>
+                  </div>
+                  <div class="bg-card border border-border rounded-lg p-4">
+                    <div class="text-xs text-gray-400 mb-2">Battery charge (%)</div>
+                    <div class="h-56"><canvas id="upsChartCharge"></canvas></div>
+                  </div>
+                  <div class="bg-card border border-border rounded-lg p-4">
+                    <div class="text-xs text-gray-400 mb-2">Runtime remaining (min)</div>
+                    <div class="h-56"><canvas id="upsChartRuntime"></canvas></div>
+                  </div>
+                  <div class="bg-card border border-border rounded-lg p-4">
+                    <div class="text-xs text-gray-400 mb-2">Input voltage (V)</div>
+                    <div class="h-56"><canvas id="upsChartVoltage"></canvas></div>
+                  </div>
+                </div>
               </div>
             </template>
 
@@ -1267,6 +1361,36 @@
           </div>
         </template>
 
+        <!-- USB UPS (HID Power Device) — no network creds; identity + rating -->
+        <template x-if="form.adapter_type === 'usbups'">
+          <div class="space-y-3 border border-border rounded-lg p-4">
+            <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">USB device</div>
+            <p class="text-xs text-gray-500">
+              Leave VID/PID blank to auto-detect the first USB HID Power Device.
+              The UPS must be passed through to the container (<code>--device</code>).
+              Hostname above is just a label for USB UPSs.
+            </p>
+            <div class="grid grid-cols-3 gap-3">
+              <div>
+                <label class="label">USB Vendor ID</label>
+                <input x-model="form.credentials.usb_vid" class="input w-full" placeholder="auto (e.g. 0x06da)">
+              </div>
+              <div>
+                <label class="label">USB Product ID</label>
+                <input x-model="form.credentials.usb_pid" class="input w-full" placeholder="auto (e.g. 0xffff)">
+              </div>
+              <div>
+                <label class="label">Rated Power (W)</label>
+                <input x-model="form.credentials.nominal_real_power" class="input w-full" placeholder="1320">
+              </div>
+            </div>
+            <p class="text-xs text-gray-500">
+              Rated power is used to compute watts from load % when the UPS
+              doesn't report real power directly (the VI-2200 doesn't).
+            </p>
+          </div>
+        </template>
+
         <!-- CIMC / Redfish credentials -->
         <template x-if="['cimc','cimc_redfish','redfish','ilo','idrac','ibmc'].includes(form.adapter_type)">
           <div class="space-y-3 border border-border rounded-lg p-4">
@@ -1481,6 +1605,16 @@
       appInfo:         { version: '', github_url: '', dockerhub_url: '' },
       form: {},
 
+      // ── UPS graphs ────────────────────────────────────────────────────────
+      upsRangeHours:   24,
+      upsHistoryEmpty: false,
+      upsRanges: [
+        { label: '1h', hours: 1 },
+        { label: '6h', hours: 6 },
+        { label: '24h', hours: 24 },
+        { label: '7d', hours: 168 },
+      ],
+
       // ── Add-device modal: requirements tooltip + active preflight ─────────
       // adapterRequirements is the static metadata served by
       // /api/adapter-requirements. Loaded once at app init.
@@ -1644,6 +1778,8 @@
               // 2. If we are currently looking at this exact device, refresh its details immediately
               if (this.selectedId === data.device_id) {
                 await this.loadDetail(this.selectedId);
+                // Extend the UPS graphs with the freshly-polled sample.
+                if (this.isUps && this.tab === 'graphs') await this.loadUpsHistory();
               }
             }
           } catch (e) {
@@ -1692,10 +1828,107 @@
           await fetch(`/api/devices/${this.selectedId}/refresh`, { method: 'POST' });
           await this.loadDetail(this.selectedId);
           await this.loadDevices();
+          if (this.isUps && this.tab === 'graphs') await this.loadUpsHistory();
           this.showToast('Refreshed');
         } finally {
           this.loading = false;
         }
+      },
+
+      // ── UPS helpers + graphs ────────────────────────────────────────────────
+      fmtPct(v)  { return v == null ? '—' : Math.round(v) + '%'; },
+
+      upsStateClass(state) {
+        if (state === 'low_battery') return 'bg-red-900/30 border-red-700 text-red-200';
+        if (state === 'on_battery')  return 'bg-yellow-900/30 border-yellow-700 text-yellow-200';
+        return 'bg-green-900/30 border-green-700 text-green-200';
+      },
+
+      async initUpsGraphs() {
+        // Fired by x-init when the Graphs tab DOM is inserted. Chart.js needs
+        // the canvases to exist first, hence the $nextTick in the template.
+        await this.loadUpsHistory();
+      },
+
+      async loadUpsHistory() {
+        if (!this.selectedId) return;
+        let data;
+        try {
+          const r = await fetch(`/api/devices/${this.selectedId}/history?hours=${this.upsRangeHours}`);
+          if (!r.ok) return;
+          data = await r.json();
+        } catch (e) { return; }
+        const m = data.metrics || {};
+        this.upsHistoryEmpty = !Object.values(m).some(s => s && s.length);
+        // Build a shared label axis from the longest series' timestamps.
+        const fmt = (iso) => {
+          const d = new Date(iso);
+          return this.upsRangeHours > 48
+            ? d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit' })
+            : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        };
+        const series = (key) => (m[key] || []);
+        const labelsFrom = (key) => series(key).map(p => fmt(p[0]));
+        const vals = (key) => series(key).map(p => p[1]);
+        const runtimeMin = series('runtime_sec').map(p => [p[0], Math.round(p[1] / 60 * 10) / 10]);
+
+        this._renderChart('upsChartPower', labelsFrom('load_pct'), [
+          { label: 'Load %', data: vals('load_pct'), color: '#60a5fa', axis: 'y' },
+          { label: 'Watts',  data: vals('watts'),    color: '#f59e0b', axis: 'y1' },
+        ], { y: { title: '%', max: 100 }, y1: { title: 'W', right: true } });
+
+        this._renderChart('upsChartCharge', labelsFrom('charge_pct'), [
+          { label: 'Charge %', data: vals('charge_pct'), color: '#34d399', axis: 'y', fill: true },
+        ], { y: { title: '%', max: 100 } });
+
+        this._renderChart('upsChartRuntime', runtimeMin.map(p => fmt(p[0])), [
+          { label: 'Runtime (min)', data: runtimeMin.map(p => p[1]), color: '#a78bfa', axis: 'y' },
+        ], { y: { title: 'min' } });
+
+        this._renderChart('upsChartVoltage', labelsFrom('input_voltage'), [
+          { label: 'Input V', data: vals('input_voltage'), color: '#f472b6', axis: 'y' },
+        ], { y: { title: 'V' } });
+      },
+
+      // Chart instances live on `window` (not Alpine state) so Alpine's reactive
+      // proxy never wraps the Chart objects — wrapping breaks Chart.js's
+      // internal canvas/ref identity checks.
+      _renderChart(canvasId, labels, datasets, axes) {
+        if (typeof Chart === 'undefined') return;
+        const el = document.getElementById(canvasId);
+        if (!el) return;
+        window.__upsCharts = window.__upsCharts || {};
+        if (window.__upsCharts[canvasId]) window.__upsCharts[canvasId].destroy();
+        const scales = {
+          x: { ticks: { color: '#6b7280', maxTicksLimit: 8, font: { size: 9 } }, grid: { color: '#2a3144' } },
+        };
+        for (const [id, cfg] of Object.entries(axes)) {
+          scales[id] = {
+            position: cfg.right ? 'right' : 'left',
+            beginAtZero: true,
+            ...(cfg.max ? { max: cfg.max } : {}),
+            title: { display: !!cfg.title, text: cfg.title, color: '#6b7280', font: { size: 9 } },
+            ticks: { color: '#6b7280', font: { size: 9 } },
+            grid: { color: cfg.right ? 'transparent' : '#2a3144' },
+          };
+        }
+        window.__upsCharts[canvasId] = new Chart(el, {
+          type: 'line',
+          data: {
+            labels,
+            datasets: datasets.map(d => ({
+              label: d.label, data: d.data, yAxisID: d.axis,
+              borderColor: d.color, backgroundColor: d.fill ? d.color + '33' : d.color,
+              fill: !!d.fill, tension: 0.25, pointRadius: 0, borderWidth: 1.5,
+            })),
+          },
+          options: {
+            responsive: true, maintainAspectRatio: false, animation: false,
+            interaction: { intersect: false, mode: 'index' },
+            plugins: { legend: { labels: { color: '#9ca3af', boxWidth: 12, font: { size: 10 } } } },
+            scales,
+          },
+        });
       },
 
       // ── actions ───────────────────────────────────────────────────────────
@@ -1955,6 +2188,7 @@
           { value: 'snmp',         label: 'SNMP (generic)' },
         ],
         ups: [
+          { value: 'usbups',       label: 'USB UPS (HID Power Device)' },
           { value: 'snmp',         label: 'SNMP (generic)' },
         ],
       },
@@ -2007,6 +2241,7 @@
             community: '', write_community: '',
             ssh_username: '', ssh_password: '', ssh_port: 22,
             username: '', password: '', port: 443, system_id: '1',
+            usb_vid: '', usb_pid: '', nominal_real_power: '',
           },
           notes: '',
         };
@@ -2183,6 +2418,10 @@
         return this.selectedDevice?.device_type === 'server';
       },
 
+      get isUps() {
+        return this.selectedDevice?.adapter_type === 'usbups';
+      },
+
       get deviceGroups() {
         const groups = {};
         for (const d of this.devices) {
@@ -2215,6 +2454,10 @@
           }
           return tabs;
         }
+        if (this.isUps) return [
+          { id: 'overview', label: 'Overview', icon: 'fa-solid fa-gauge' },
+          { id: 'graphs',   label: 'Graphs',   icon: 'fa-solid fa-chart-line' },
+        ];
         return [{ id: 'overview', label: 'Overview', icon: 'fa-solid fa-gauge' }];
       },
 

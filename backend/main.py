@@ -5,6 +5,7 @@ import secrets
 import ssl
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from threading import Lock
 
 import httpx
@@ -16,7 +17,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from . import __version__ as APP_VERSION
 from .database import get_db, init_db
-from .models import Device, DeviceCache, AuthUser
+from .models import Device, DeviceCache, DeviceMetric, AuthUser
 from .schemas import DeviceCreate, DeviceUpdate, LoginRequest, ChangePasswordRequest, PreflightRequest
 from . import poller
 from .adapters import get_adapter
@@ -292,6 +293,83 @@ async def refresh_device(device_id: int, db: Session = Depends(get_db)):
 @api.get("/devices/{device_id}/cache")
 def get_cache(device_id: int, db: Session = Depends(get_db)):
     return _cache_map(device_id, db)
+
+
+def _downsample(points: list[tuple], max_points: int) -> list[list]:
+    """Bucket-average a [(ts, value), …] series down to ~max_points so a
+    30-day window doesn't ship 40k points to a canvas that's 600px wide. Each
+    bucket reports its mid-time and mean value; short series pass through
+    untouched. Returns [[iso_ts, value], …]."""
+    n = len(points)
+    if n <= max_points:
+        return [[ts.isoformat(), v] for ts, v in points]
+    out: list[list] = []
+    bucket = n / max_points
+    for i in range(max_points):
+        lo = int(i * bucket)
+        hi = int((i + 1) * bucket) or lo + 1
+        chunk = points[lo:hi]
+        if not chunk:
+            continue
+        mid = chunk[len(chunk) // 2][0]
+        avg = sum(v for _, v in chunk) / len(chunk)
+        out.append([mid.isoformat(), round(avg, 3)])
+    return out
+
+
+@api.get("/devices/{device_id}/history")
+def get_history(
+    device_id: int,
+    metrics: str | None = None,
+    hours: float = 24.0,
+    max_points: int = 600,
+    db: Session = Depends(get_db),
+):
+    """Time-series history for graphing. `metrics` is a comma-separated list
+    (default: every metric the device has recorded); `hours` is the look-back
+    window. Series longer than `max_points` are bucket-averaged. Shape:
+    {from, to, metrics: {name: [[iso_ts, value], …]}}."""
+    _device_or_404(device_id, db)
+    since = datetime.utcnow() - timedelta(hours=max(0.0, hours))
+    wanted = [m.strip() for m in metrics.split(",") if m.strip()] if metrics else None
+
+    q = db.query(DeviceMetric).filter(
+        DeviceMetric.device_id == device_id,
+        DeviceMetric.ts >= since,
+    )
+    if wanted:
+        q = q.filter(DeviceMetric.metric.in_(wanted))
+    rows = q.order_by(DeviceMetric.ts.asc()).all()
+
+    series: dict[str, list[tuple]] = {}
+    for r in rows:
+        series.setdefault(r.metric, []).append((r.ts, r.value))
+
+    return {
+        "from": since.isoformat(),
+        "to": datetime.utcnow().isoformat(),
+        "metrics": {m: _downsample(pts, max_points) for m, pts in series.items()},
+    }
+
+
+@api.get("/devices/{device_id}/usb-diagnostics")
+async def usb_diagnostics(device_id: int, db: Session = Depends(get_db)):
+    """Dump the raw HID report descriptor + decoded usages/values for a USB UPS.
+    The USB analogue of the snmp-walk debug route — used to confirm a new UPS
+    model is covered by the generic HID parser, or to see what's missing."""
+    d = _device_or_404(device_id, db)
+    if d.adapter_type != "usbups":
+        raise HTTPException(status_code=400, detail="USB diagnostics only available for usbups devices")
+    adapter = get_adapter(d.adapter_type, d.hostname, d.credentials or {})
+    try:
+        return await adapter.diagnostics()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {exc}")
+    finally:
+        try:
+            await adapter.close()
+        except Exception:
+            pass
 
 
 @api.get("/devices/{device_id}/credentials")

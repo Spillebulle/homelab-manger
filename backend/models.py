@@ -1,5 +1,8 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, Text, DateTime, ForeignKey, UniqueConstraint, TypeDecorator
+from sqlalchemy import (
+    Column, Integer, Float, String, Boolean, Text, DateTime, ForeignKey,
+    UniqueConstraint, Index, TypeDecorator,
+)
 from .database import Base
 from .credentials_crypto import encrypt_credentials, decrypt_credentials
 
@@ -60,6 +63,34 @@ class DeviceCache(Base):
     # shows yesterday's data with no indication that's what happened.
     __table_args__ = (
         UniqueConstraint("device_id", "cache_key", name="uq_device_cache_key"),
+    )
+
+
+class DeviceMetric(Base):
+    """Time-series samples for graphing. One row per (device, metric, sample).
+
+    Unlike `device_cache` (which keeps only the latest value per key), this
+    table accumulates history. The poller writes the numeric members of an
+    adapter's `metrics` cache key here every poll cycle and prunes rows beyond
+    METRICS_RETENTION_DAYS. New table ⇒ `Base.metadata.create_all` in init_db
+    creates it automatically; no manual migration needed.
+
+    Float storage (not the EncryptedJSON dict pattern) because these are
+    non-secret numeric series queried by range — encryption would defeat the
+    indexed time-window scans the history endpoint relies on."""
+    __tablename__ = "device_metrics"
+
+    id = Column(Integer, primary_key=True)
+    device_id = Column(Integer, ForeignKey("devices.id", ondelete="CASCADE"), nullable=False)
+    metric = Column(String(50), nullable=False)   # load_pct | watts | charge_pct | runtime_sec | …
+    value = Column(Float, nullable=False)
+    ts = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    # The history endpoint always filters by (device_id, metric) over a ts
+    # range and orders by ts — this composite index serves both the scan and
+    # the retention-prune DELETE.
+    __table_args__ = (
+        Index("ix_device_metrics_lookup", "device_id", "metric", "ts"),
     )
 
 

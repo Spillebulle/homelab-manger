@@ -1,16 +1,48 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
+import os
+from datetime import datetime, timedelta
 
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from .database import SessionLocal
-from .models import Device, DeviceCache
+from .models import Device, DeviceCache, DeviceMetric
 from .adapters import get_adapter
 
 logger = logging.getLogger(__name__)
 POLL_INTERVAL = int(60)  # seconds between full polls
+
+# How long to keep time-series samples (device_metrics). Pruned per device on
+# every poll — an indexed DELETE, cheap at homelab scale. 0/negative disables
+# pruning (unbounded history).
+METRICS_RETENTION_DAYS = int(os.environ.get("METRICS_RETENTION_DAYS", "30"))
+
+# Cache key whose numeric members are persisted to the time-series table. Any
+# adapter that exposes a `metrics` key (currently usbups; PDUs/servers later)
+# automatically gets graphed history with no extra poller code.
+_METRICS_CACHE_KEY = "metrics"
+
+
+def _record_metrics(db, device_id: int, data, ts: datetime) -> None:
+    """Append the numeric members of a `metrics` payload to device_metrics, then
+    prune anything older than the retention window. Silent no-op if the payload
+    isn't a flat dict of numbers."""
+    if not isinstance(data, dict):
+        return
+    rows = [
+        {"device_id": device_id, "metric": k, "value": float(v), "ts": ts}
+        for k, v in data.items()
+        if isinstance(v, (int, float)) and not isinstance(v, bool)
+    ]
+    if rows:
+        db.execute(sqlite_insert(DeviceMetric), rows)
+    if METRICS_RETENTION_DAYS > 0:
+        cutoff = ts - timedelta(days=METRICS_RETENTION_DAYS)
+        db.query(DeviceMetric).filter(
+            DeviceMetric.device_id == device_id,
+            DeviceMetric.ts < cutoff,
+        ).delete(synchronize_session=False)
 
 
 def _upsert_cache(db, device_id: int, key: str, data: str | None, error: str | None):
@@ -55,6 +87,10 @@ async def poll_device(device_id: int, on_update=None):
                 try:
                     data = await adapter.fetch(key)
                     _upsert_cache(db, device_id, key, json.dumps(data), None)
+                    # The `metrics` key doubles as the time-series source —
+                    # persist its numeric members for graphing.
+                    if key == _METRICS_CACHE_KEY:
+                        _record_metrics(db, device_id, data, datetime.utcnow())
                 except Exception as exc:
                     logger.warning("poll %s/%s failed: %s", device.name, key, exc)
                     _upsert_cache(db, device_id, key, None, str(exc))

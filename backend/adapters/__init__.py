@@ -5,6 +5,7 @@ from .hpe1820 import HPE1820Adapter
 from .cimc import CIMCAdapter
 from .cimc_redfish import CIMCRedfishAdapter
 from .redfish import RedfishAdapter
+from .usbups import USBUPSAdapter
 
 ADAPTER_MAP: dict[str, type[BaseAdapter]] = {
     "snmp":         SNMPAdapter,
@@ -16,6 +17,7 @@ ADAPTER_MAP: dict[str, type[BaseAdapter]] = {
     "ilo":          RedfishAdapter,      # HP iLO 5+
     "idrac":        RedfishAdapter,      # Dell iDRAC 8+
     "ibmc":         RedfishAdapter,      # Huawei iBMC
+    "usbups":       USBUPSAdapter,       # USB-connected UPS via HID Power Device class
 }
 
 
