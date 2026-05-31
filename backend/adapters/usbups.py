@@ -27,11 +27,20 @@ rule on the host). See the Dockerfile and CLAUDE.md.
 """
 import asyncio
 import logging
+import threading
+import time
 from typing import Any
 
 from .base import BaseAdapter
 
 logger = logging.getLogger(__name__)
+
+# The hidraw node is effectively single-open. Each poll cycle builds a fresh
+# adapter instance, so a per-instance lock can't serialize a scheduled poll
+# against a manual refresh or the /usb-diagnostics endpoint — they'd open the
+# device concurrently and one gets EBUSY ("No USB HID Power Device found").
+# This process-wide lock serialises every USB session across all instances.
+_USB_LOCK = threading.Lock()
 
 # ── Canonical HID Power Device usage codes (page << 16 | selector) ────────────
 # Values from NUT's drivers/usbhid-ups.c `usage_lkp[]`. Do NOT swap these for
@@ -50,7 +59,9 @@ U_ACTIVE_POWER     = 0x00840034   # watts (real power), when the UPS reports it
 U_PERCENT_LOAD     = 0x00840035   # % of rated load
 U_TEMPERATURE      = 0x00840036
 U_CONFIG_VOLTAGE   = 0x00840040
-U_CONFIG_ACTIVE_PW = 0x00840043   # rated real power (W) — fallback basis for watts
+U_CONFIG_ACTIVE_PW = 0x00840044   # ConfigActivePower = rated real power (W).
+#                                   NB: 0x43 is ConfigApparentPower (VA) — a
+#                                   different thing; don't use it for watts.
 
 U_REMAINING_CAP    = 0x00850066   # battery charge %
 U_FULL_CHARGE_CAP  = 0x00850067
@@ -364,14 +375,26 @@ class USBUPSAdapter(BaseAdapter):
                 "hidapi not installed — `pip install hidapi` and ensure "
                 "libhidapi is present (apt: libhidapi-libusb0).") from exc
 
-        dev, (vid, pid) = self._open_device(hid)
-        try:
-            return self._read_from_device(dev, vid, pid)
-        finally:
-            try:
-                dev.close()
-            except Exception:
-                pass
+        # Serialise the whole open→read→close against any other USB session
+        # (poll vs refresh vs diagnostics) and retry a couple of times to ride
+        # out a transient EBUSY while the previous handle is still releasing.
+        last_exc: Exception | None = None
+        with _USB_LOCK:
+            for attempt in range(3):
+                try:
+                    dev, (vid, pid) = self._open_device(hid)
+                except Exception as exc:
+                    last_exc = exc
+                    time.sleep(0.3)
+                    continue
+                try:
+                    return self._read_from_device(dev, vid, pid)
+                finally:
+                    try:
+                        dev.close()
+                    except Exception:
+                        pass
+        raise last_exc or RuntimeError("USB UPS open failed")
 
     def _read_from_device(self, dev, vid, pid) -> dict:
         """Read every interesting usage from an already-open hid.device. Split
@@ -473,15 +496,21 @@ class USBUPSAdapter(BaseAdapter):
     # ── Shaping ─────────────────────────────────────────────────────────────
 
     def _watts(self, r: dict) -> float | None:
-        """Real power. Prefer the UPS's own ActivePower; else derive from load %
-        and the rated real power (ConfigActivePower if the UPS exposes it, else
-        the configured nominal)."""
+        """Real power. Prefer the UPS's own live ActivePower; otherwise derive
+        from load % × rated real power.
+
+        The rating is the **configured** `nominal_real_power` (default 1320 W),
+        NOT the descriptor's ConfigActivePower. Trusting the descriptor here
+        produced 6.7 W instead of ~850 W on the VI-2200: its ConfigActivePower
+        is absent and the nearby ConfigApparentPower (VA) reads as a tiny
+        scaled value. An explicitly-set rating must always win; the descriptor
+        value is only a last resort when nothing is configured."""
         if r.get("active_power") is not None:
             return round(float(r["active_power"]), 1)
         load = r.get("load_pct")
         if load is None:
             return None
-        nominal = r.get("config_active_power") or self.nominal_watts
+        nominal = self.nominal_watts or r.get("config_active_power") or _DEFAULT_NOMINAL_WATTS
         return round(float(load) / 100.0 * float(nominal), 1)
 
     def _state(self, r: dict) -> tuple[str, str]:
@@ -594,6 +623,13 @@ class USBUPSAdapter(BaseAdapter):
 
     def _diagnostics_sync(self) -> dict:
         import hid
+        # Same process-wide lock as _read_all_sync — a diagnostics call must not
+        # open the device while a poll holds it (that EBUSY was what made the
+        # device "disappear" mid-test).
+        with _USB_LOCK:
+            return self._diagnostics_locked(hid)
+
+    def _diagnostics_locked(self, hid) -> dict:
         dev, (vid, pid) = self._open_device(hid)
         try:
             desc = self._get_descriptor(dev)
