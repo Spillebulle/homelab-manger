@@ -55,6 +55,9 @@ class CIMCRedfishAdapter(CIMCAdapter):
     XMLAPI plumbing (login, _resolve_class, the post-poll session reaper)
     and the KVM JNLP flow from the legacy adapter unchanged."""
 
+    # 3.0+ Redfish adds GracefulShutdown (the legacy XMLAPI path lacked it).
+    SHUTDOWN_ACTIONS = ["graceful_shutdown", "power_off"]
+
     REQUIREMENTS = [
         {
             "service": "HTTPS (Redfish)",

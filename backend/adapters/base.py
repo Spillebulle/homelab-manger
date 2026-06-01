@@ -28,6 +28,13 @@ class BaseAdapter(ABC):
     # port reflects the credential overrides; this class attr is the fallback.
     REQUIREMENTS: list[dict] = []
 
+    # Shutdown-style actions this adapter's execute_action actually supports,
+    # used by the UPS outage-orchestration UI to only offer real options (and
+    # to exclude devices that can't be powered off — e.g. L2 switches — as
+    # shutdown targets). Subset of {"graceful_shutdown", "power_off"}. Default
+    # none; servers with a BMC override it.
+    SHUTDOWN_ACTIONS: list[str] = []
+
     def __init__(self, hostname: str, credentials: dict):
         self.hostname = hostname
         self.credentials = credentials

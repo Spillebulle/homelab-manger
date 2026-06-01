@@ -423,8 +423,9 @@
                           </td>
                           <td class="py-2 px-3">
                             <select x-model="rule.action" @change="updateShutdownRule(rule)" class="input py-1">
-                              <option value="graceful_shutdown">Graceful shutdown</option>
-                              <option value="power_off">Force power off</option>
+                              <template x-for="a in (rule.target_shutdown_actions || [])" :key="a">
+                                <option :value="a" x-text="shutdownActionLabel(a)"></option>
+                              </template>
                             </select>
                           </td>
                           <td class="py-2 px-3 whitespace-nowrap">
@@ -2197,12 +2198,17 @@
 
       async addShutdownTarget() {
         if (!this.shutdownAddTarget) return;
+        const id = parseInt(this.shutdownAddTarget, 10);
+        const cand = this.devices.find(d => d.id === id);
+        const acts = cand?.shutdown_actions || [];
+        // Prefer a graceful shutdown when the device supports it.
+        const action = acts.includes('graceful_shutdown') ? 'graceful_shutdown' : (acts[0] || 'power_off');
         const r = await fetch(`/api/devices/${this.selectedId}/shutdown-rules`, {
           method:  'POST',
           headers: { 'Content-Type': 'application/json' },
           body:    JSON.stringify({
-            target_device_id: parseInt(this.shutdownAddTarget, 10),
-            action: 'graceful_shutdown',
+            target_device_id: id,
+            action,
             trigger_charge_pct: 20,   // sensible default; user adjusts
             trigger_runtime_sec: null,
             enabled: true,
@@ -2914,12 +2920,20 @@
         return this.selectedDevice?.adapter_type === 'usbups';
       },
 
-      // Devices eligible to add to this UPS's shutdown plan: anything that
-      // isn't this UPS, isn't another UPS, and isn't already in the plan.
+      // Devices eligible to add to this UPS's shutdown plan: not this UPS, not
+      // another UPS, not already in the plan, and — crucially — a device whose
+      // adapter can actually be powered off (servers/BMCs). Switches report no
+      // shutdown_actions, so they're excluded (an L2 switch can't power itself
+      // off; that's a PDU's job).
       get shutdownCandidates() {
         const have = new Set(this.shutdownRules.map(r => r.target_device_id));
         return this.devices.filter(d =>
-          d.id !== this.selectedId && d.device_type !== 'ups' && !have.has(d.id));
+          d.id !== this.selectedId && d.device_type !== 'ups' && !have.has(d.id)
+          && (d.shutdown_actions?.length > 0));
+      },
+
+      shutdownActionLabel(a) {
+        return { graceful_shutdown: 'Graceful shutdown', power_off: 'Force power off' }[a] || a;
       },
 
       get deviceGroups() {

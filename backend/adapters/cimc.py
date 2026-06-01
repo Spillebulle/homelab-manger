@@ -33,6 +33,11 @@ def _legacy_ssl_context() -> ssl.SSLContext:
 
 
 class CIMCAdapter(BaseAdapter):
+    # 2.0(9f) XMLAPI adminPower has no GracefulShutdown equivalent — only a
+    # forced power-down. CIMCRedfishAdapter (3.0+) overrides this to add
+    # graceful_shutdown.
+    SHUTDOWN_ACTIONS = ["power_off"]
+
     REQUIREMENTS = [
         {
             "service": "HTTPS (XMLAPI)",

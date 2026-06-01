@@ -30,6 +30,10 @@ _SNMP_SETUP_CACHE: dict[tuple, tuple] = {}
 
 
 class RedfishAdapter(BaseAdapter):
+    # Redfish exposes both a graceful (GracefulShutdown) and a forced (ForceOff)
+    # power-down — see _RESET_TYPES — so both are valid UPS-shutdown targets.
+    SHUTDOWN_ACTIONS = ["graceful_shutdown", "power_off"]
+
     # One adapter class serves redfish / ilo / idrac / ibmc. The base requirement
     # is HTTPS on the configured port. Huawei iBMC gets an extra SNMPv3 hint
     # added at runtime — see `requirements()` — because Redfish 1.0 there
