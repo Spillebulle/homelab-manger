@@ -42,6 +42,7 @@ docker run -d --name homelab-manger \
   -p 8080:8080 \
   -e ADMIN_PASSWORD=pick-something \
   -v homelab-data:/data \
+  --privileged -v /dev:/dev:ro \
   ghcr.io/spillebulle/homelab-manger:latest
 ```
 
@@ -52,10 +53,13 @@ docker run -d --name homelab-manger \
   -p 8080:8080 \
   -e ADMIN_PASSWORD=pick-something \
   -v homelab-data:/data \
+  --privileged -v /dev:/dev:ro \
   spillebulle/homelab-manger:latest
 ```
 
 > Both registries serve the same image. Pin a version (e.g. `:v0.1.0`) in production instead of `:latest`.
+>
+> **The `--privileged -v /dev:/dev:ro` line is only needed if you monitor a USB-connected UPS** (the `usbups` adapter) — it lets the container reach the UPS's `/dev/hidrawN` node, which changes when the UPS re-enumerates. Bind the **whole** `/dev` (not just `/dev/bus/usb`); read-only (`:ro`) is enough. Omit the line entirely for network-only devices (switches, servers, BMCs).
 
 ### Option 3 — Build the image locally
 
