@@ -464,6 +464,20 @@ class USBUPSAdapter(BaseAdapter):
             except Exception as exc:
                 last_exc = exc
             d.close()
+        # Distinguish "not present at all" from "present on the host bus but the
+        # container can't open its node". The latter is the classic --device vs
+        # bind-mount trap: a re-enumerated UPS gets a new /dev/bus/usb devnum
+        # that a static --device mapping never exposes. Checking sysfs (always
+        # the host's view) tells us which it is, so the error is actionable.
+        present = any(True for _ in _iter_usb_sysfs_dirs(self.vid, self.pid))
+        if present:
+            raise RuntimeError(
+                f"UPS {self.vid:04x}:{self.pid:04x} is present on the host USB bus but "
+                "its device node can't be opened from the container. The container "
+                "isn't seeing the (re-enumerated) /dev/bus/usb node — pass USB through "
+                "with a BIND MOUNT: -v /dev/bus/usb:/dev/bus/usb plus "
+                "--device-cgroup-rule='c 189:* rmw' (or --privileged), NOT --device, so "
+                f"new devnums stay visible. Last error: {last_exc}")
         raise RuntimeError(
             "No USB HID Power Device found. Check the UPS is plugged in, passed "
             "through to the container, and not a megatec/serial UPS. "
