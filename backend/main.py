@@ -5,11 +5,11 @@ import secrets
 import ssl
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from threading import Lock
 
 import httpx
-from fastapi import APIRouter, FastAPI, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, FastAPI, HTTPException, Depends, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
@@ -121,6 +121,14 @@ def _device_or_404(device_id: int, db: Session) -> Device:
         raise HTTPException(status_code=404, detail="Device not found")
     return d
 
+def _iso_z(dt: datetime) -> str:
+    """Render a naive-UTC timestamp as RFC 3339 with a trailing `Z`. Every
+    timestamp this API emits goes through here. Our stored timestamps are naive
+    UTC (`datetime.utcnow()`); without the `Z` downstream consumers (browsers,
+    Grafana, anything calling `new Date()`) guess the zone and shift the value."""
+    return dt.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def _cache_map(device_id: int, db: Session) -> dict:
     """Robust JSON parsing for the device cache."""
     rows = db.query(DeviceCache).filter(DeviceCache.device_id == device_id).all()
@@ -135,7 +143,7 @@ def _cache_map(device_id: int, db: Session) -> dict:
         if r.error:
             out[f"{r.cache_key}_error"] = r.error
         if r.updated_at:
-            out[f"{r.cache_key}_updated"] = r.updated_at.isoformat()
+            out[f"{r.cache_key}_updated"] = _iso_z(r.updated_at)
     return out
 
 
@@ -227,7 +235,7 @@ def list_devices(db: Session = Depends(get_db)):
             "shutdown_actions": _shutdown_actions_for(d.adapter_type),
             "status": status_data,
             "status_error": status_row.error if status_row else None,
-            "last_seen": status_row.updated_at.isoformat() if status_row and status_row.updated_at else None,
+            "last_seen": _iso_z(status_row.updated_at) if status_row and status_row.updated_at else None,
         })
     return result
 
@@ -242,8 +250,8 @@ def list_api_keys(db: Session = Depends(get_db)):
             "id": k.id,
             "name": k.name,
             "prefix": k.prefix,
-            "created_at": k.created_at.isoformat() if k.created_at else None,
-            "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
+            "created_at": _iso_z(k.created_at) if k.created_at else None,
+            "last_used_at": _iso_z(k.last_used_at) if k.last_used_at else None,
         }
         for k in keys
     ]
@@ -362,7 +370,7 @@ def list_events(device_id: int | None = None, event_type: str | None = None,
     return [
         {
             "id": e.id,
-            "ts": e.ts.isoformat() if e.ts else None,
+            "ts": _iso_z(e.ts) if e.ts else None,
             "device_id": e.device_id,
             "device_name": e.device_name,
             "event_type": e.event_type,
@@ -461,7 +469,7 @@ def _serialize_rule(r: ShutdownRule, db: Session) -> dict:
         "trigger_charge_pct": r.trigger_charge_pct,
         "trigger_runtime_sec": r.trigger_runtime_sec,
         "enabled": r.enabled,
-        "last_triggered_at": r.last_triggered_at.isoformat() if r.last_triggered_at else None,
+        "last_triggered_at": _iso_z(r.last_triggered_at) if r.last_triggered_at else None,
     }
 
 
@@ -554,7 +562,7 @@ def _downsample(points: list[tuple], max_points: int) -> list[list]:
     untouched. Returns [[iso_ts, value], …]."""
     n = len(points)
     if n <= max_points:
-        return [[ts.isoformat(), v] for ts, v in points]
+        return [[_iso_z(ts), v] for ts, v in points]
     out: list[list] = []
     bucket = n / max_points
     for i in range(max_points):
@@ -565,7 +573,7 @@ def _downsample(points: list[tuple], max_points: int) -> list[list]:
             continue
         mid = chunk[len(chunk) // 2][0]
         avg = sum(v for _, v in chunk) / len(chunk)
-        out.append([mid.isoformat(), round(avg, 3)])
+        out.append([_iso_z(mid), round(avg, 3)])
     return out
 
 
@@ -598,10 +606,157 @@ def get_history(
         series.setdefault(r.metric, []).append((r.ts, r.value))
 
     return {
-        "from": since.isoformat(),
-        "to": datetime.utcnow().isoformat(),
+        "from": _iso_z(since),
+        "to": _iso_z(datetime.utcnow()),
         "metrics": {m: _downsample(pts, max_points) for m, pts in series.items()},
     }
+
+
+# ── Graph endpoint (BI / charting tool friendly) ─────────────────────────────
+#
+# `/history` returns a nested `{metrics: {name: [[ts, value], …]}}` object whose
+# rows are 2-element arrays — convenient for the bundled SPA, awkward for generic
+# charting tools (Grafana Infinity, Metabase, Observable, pandas.read_json …),
+# which all want a flat array of objects with named, typed columns and an
+# unambiguous timestamp. `/graph` is that shape. It's intentionally generic
+# (any device that records `metrics` works, not just UPS) and named `graph`
+# rather than e.g. `grafana` so it reads as tool-agnostic.
+#
+# Differences from `/history` that make it "work like other APIs":
+#   • Top-level JSON array — no root/object to drill into.
+#   • RFC 3339 timestamps with an explicit `Z` (UTC), so no tool guesses the zone.
+#   • Accepts a `from`/`to` window in epoch-ms (Grafana's ${__from}/${__to}),
+#     epoch-seconds, or ISO-8601 — so the tool's own time picker can drive it.
+
+def _parse_time_param(val: str | None) -> datetime | None:
+    """Parse a `from`/`to` query value into naive UTC. Accepts epoch
+    milliseconds (Grafana ${__from}/${__to}), epoch seconds, or an ISO-8601
+    string (with or without an offset). Returns None for missing/blank."""
+    if not val or not val.strip():
+        return None
+    val = val.strip()
+    if val.lstrip("-").isdigit():
+        n = int(val)
+        # Grafana sends epoch *milliseconds*; bare seconds are ~1.7e9, ms ~1.7e12.
+        if abs(n) >= 100_000_000_000:  # 1e11 — anything larger is milliseconds
+            return datetime.utcfromtimestamp(n / 1000.0)
+        return datetime.utcfromtimestamp(n)
+    dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _load_metric_series(device_id: int, wanted: list[str] | None,
+                        since: datetime, until: datetime,
+                        db: Session) -> dict[str, list[tuple]]:
+    """Group raw metric samples in [since, until] into {metric: [(ts, value)]}."""
+    q = db.query(DeviceMetric).filter(
+        DeviceMetric.device_id == device_id,
+        DeviceMetric.ts >= since,
+        DeviceMetric.ts <= until,
+    )
+    if wanted:
+        q = q.filter(DeviceMetric.metric.in_(wanted))
+    rows = q.order_by(DeviceMetric.ts.asc()).all()
+    series: dict[str, list[tuple]] = {}
+    for r in rows:
+        series.setdefault(r.metric, []).append((r.ts, r.value))
+    return series
+
+
+def _downsample_tuples(points: list[tuple], max_points: int) -> list[tuple]:
+    """Bucket-average a [(ts, value), …] series to ~max_points, preserving
+    (datetime, value) tuples (the tuple-returning sibling of `_downsample`)."""
+    n = len(points)
+    if n <= max_points:
+        return points
+    out: list[tuple] = []
+    bucket = n / max_points
+    for i in range(max_points):
+        lo = int(i * bucket)
+        hi = int((i + 1) * bucket) or lo + 1
+        chunk = points[lo:hi]
+        if not chunk:
+            continue
+        mid = chunk[len(chunk) // 2][0]
+        avg = sum(v for _, v in chunk) / len(chunk)
+        out.append((mid, round(avg, 3)))
+    return out
+
+
+def _wide_rows(series: dict[str, list[tuple]], start: datetime,
+               until: datetime, max_points: int) -> list[dict]:
+    """Align every metric onto a shared time grid of `max_points` buckets so
+    each output row carries one timestamp + a column per metric. Metrics with
+    no sample in a bucket are simply absent from that row (a gap, not a zero)."""
+    span = (until - start).total_seconds()
+    bucket = span / max_points if span > 0 else 1.0
+    grid: dict[int, dict[str, list[float]]] = {}
+    for metric, pts in series.items():
+        for ts, v in pts:
+            idx = int((ts - start).total_seconds() / bucket) if bucket else 0
+            idx = max(0, min(idx, max_points - 1))
+            grid.setdefault(idx, {}).setdefault(metric, []).append(v)
+    out: list[dict] = []
+    for idx in sorted(grid):
+        mid = start + timedelta(seconds=(idx + 0.5) * bucket)
+        row: dict = {"time": _iso_z(mid)}
+        for metric, vals in grid[idx].items():
+            row[metric] = round(sum(vals) / len(vals), 3)
+        out.append(row)
+    return out
+
+
+@api.get("/devices/{device_id}/graph")
+def get_graph(
+    device_id: int,
+    metrics: str | None = None,
+    hours: float = 24.0,
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = None,
+    max_points: int = 600,
+    format: str = "long",
+    db: Session = Depends(get_db),
+):
+    """Charting-tool-friendly time-series, as a flat JSON array.
+
+    Query params:
+      • `metrics`    — comma-separated metric names (default: all recorded).
+      • `from`/`to`  — window bounds; epoch-ms (Grafana ${__from}/${__to}),
+                       epoch-seconds, or ISO-8601. `to` defaults to now.
+      • `hours`      — used only when `from` is omitted (default 24).
+      • `max_points` — per-series downsample cap (default 600).
+      • `format`     — `long` (default) or `wide`.
+
+    `long` → one object per point, ideal for a multi-series panel that splits
+    by the `metric` label:
+        [ {"time": "2026-06-01T19:38:45.942Z", "metric": "watts", "value": 840.0}, … ]
+
+    `wide` → one object per timestamp, a column per metric (spreadsheet shape):
+        [ {"time": "2026-06-01T19:38:00.000Z", "watts": 840.0, "load_pct": 70.0}, … ]
+    """
+    _device_or_404(device_id, db)
+    if format not in ("long", "wide"):
+        raise HTTPException(status_code=400, detail="format must be 'long' or 'wide'")
+
+    until = _parse_time_param(to) or datetime.utcnow()
+    start = _parse_time_param(from_)
+    if start is None:
+        start = until - timedelta(hours=max(0.0, hours))
+    wanted = [m.strip() for m in metrics.split(",") if m.strip()] if metrics else None
+
+    series = _load_metric_series(device_id, wanted, start, until, db)
+
+    if format == "wide":
+        return _wide_rows(series, start, until, max(1, max_points))
+
+    rows: list[dict] = []
+    for metric, pts in series.items():
+        for ts, v in _downsample_tuples(pts, max(1, max_points)):
+            rows.append({"time": _iso_z(ts), "metric": metric, "value": v})
+    rows.sort(key=lambda r: (r["time"], r["metric"]))
+    return rows
 
 
 @api.get("/devices/{device_id}/usb-diagnostics")
@@ -740,13 +895,31 @@ async def preflight_existing_device(device_id: int, db: Session = Depends(get_db
     return await _run_preflight(adapter)
 
 
+# Adapters signal failure in-band: `execute_action` returns `{"error": ...}` (or
+# `{"errors": [...]}` for batch ops like vlan_batch) rather than raising. Other
+# API clients expect failure to surface as a non-2xx status, so map it here.
+# The body is left untouched, so the SPA (which reads `data.error`/`data.errors`
+# off the parsed body regardless of status) keeps working unchanged.
+def _action_response(result):
+    if not isinstance(result, dict):
+        return result
+    err, errs = result.get("error"), result.get("errors")
+    if err or errs:
+        msg = str(err or "").lower()
+        # Unsupported/invalid action = client error; anything else = the device
+        # or its adapter failed downstream.
+        code = 400 if ("unsupported" in msg or "not supported" in msg) else 502
+        return JSONResponse(status_code=code, content=result)
+    return result
+
+
 @api.post("/devices/{device_id}/action")
 async def device_action(device_id: int, action: dict, db: Session = Depends(get_db)):
     d = _device_or_404(device_id, db)
     creds = d.credentials or {}
     adapter = get_adapter(d.adapter_type, d.hostname, creds)
     try:
-        return await adapter.execute_action(action)
+        result = await adapter.execute_action(action)
     finally:
         # close() releases BMC session slots (CIMC has a 4-slot cap; iBMC
         # rejects new logins past ~4 active sessions). Ad-hoc actions used
@@ -756,6 +929,7 @@ async def device_action(device_id: int, action: dict, db: Session = Depends(get_
         except Exception as exc:
             logger.warning("adapter.close() after action on device %d failed: %s",
                            device_id, exc)
+    return _action_response(result)
 
 
 @api.post("/devices/{device_id}/port/{port_id}/action")
@@ -765,13 +939,14 @@ async def port_action(device_id: int, port_id: str, action: dict, db: Session = 
     adapter = get_adapter(d.adapter_type, d.hostname, creds)
     action["port_id"] = port_id
     try:
-        return await adapter.execute_action(action)
+        result = await adapter.execute_action(action)
     finally:
         try:
             await adapter.close()
         except Exception as exc:
             logger.warning("adapter.close() after port action on device %d failed: %s",
                            device_id, exc)
+    return _action_response(result)
 
 
 @api.get("/devices/{device_id}/kvm.jnlp")

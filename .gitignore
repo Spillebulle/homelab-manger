@@ -4,6 +4,7 @@ homelab.db-journal
 homelab.db-wal
 homelab.db-shm
 .session_secret
+.credential_key
 /oui.csv
 *.env
 .env
