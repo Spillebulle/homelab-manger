@@ -112,6 +112,9 @@ def _usb_reset_by_id(vid: int, pid: int) -> bool:
             return False
         try:
             fcntl.ioctl(fd, USBDEVFS_RESET, 0)
+            # Log the bus/devnum so consecutive resets reveal whether the device
+            # actually re-enumerates (devnum changes) or is hung at one address.
+            logger.warning("USB reset: ioctl OK on %s (bus %d dev %d)", node, bus, dev)
             return True
         except OSError as exc:
             logger.warning("USB reset ioctl on %s failed: %s", node, exc)
@@ -119,6 +122,65 @@ def _usb_reset_by_id(vid: int, pid: int) -> bool:
         finally:
             os.close(fd)
     return False
+
+
+def _usb_environment(vid: int, pid: int) -> dict:
+    """Report what the *container* can actually see for vid:pid, without going
+    through hidapi — so we can tell apart "node missing", "hidraw not live", and
+    "permission" failures. The reset path proves usbfs (/dev/bus/usb) is live;
+    if hidapi still can't open, this shows whether its hidraw node is present."""
+    info: dict = {"platform": sys.platform, "hidapi_version": None,
+                  "usbfs_nodes": [], "hidraw_for_device": [], "dev_hidraw_present": []}
+    try:
+        import hid
+        info["hidapi_version"] = getattr(hid, "__version__", "unknown")
+    except Exception as exc:
+        info["hidapi_version"] = f"import failed: {type(exc).__name__}: {exc}"
+    if not sys.platform.startswith("linux"):
+        return info
+
+    for d in _iter_usb_sysfs_dirs(vid, pid):
+        rec = {"sysfs": d}
+        try:
+            with open(os.path.join(d, "busnum")) as f:
+                bus = int(f.read().strip())
+            with open(os.path.join(d, "devnum")) as f:
+                dev = int(f.read().strip())
+            node = f"/dev/bus/usb/{bus:03d}/{dev:03d}"
+            rec.update(busnum=bus, devnum=dev, devnode=node,
+                       exists=os.path.exists(node),
+                       readable=os.access(node, os.R_OK),
+                       writable=os.access(node, os.W_OK))
+        except (OSError, ValueError) as exc:
+            rec["error"] = str(exc)
+        info["usbfs_nodes"].append(rec)
+
+    # Which /dev/hidrawN belongs to this UPS (match VID/PID in the HID_ID uevent
+    # line, format "0003:000006DA:0000FFFF"), and is its node live in here?
+    base = "/sys/class/hidraw"
+    needle = f"{vid:08X}:{pid:08X}".upper()
+    try:
+        for h in os.listdir(base):
+            try:
+                with open(os.path.join(base, h, "device", "uevent")) as f:
+                    ue = f.read().upper()
+            except OSError:
+                continue
+            if needle in ue.replace(" ", ""):
+                node = f"/dev/{h}"
+                info["hidraw_for_device"].append({
+                    "name": h, "devnode": node,
+                    "exists": os.path.exists(node),
+                    "readable": os.access(node, os.R_OK),
+                })
+    except OSError:
+        pass
+    try:
+        info["dev_hidraw_present"] = sorted(
+            n for n in os.listdir("/dev") if n.startswith("hidraw"))
+    except OSError:
+        pass
+    return info
 
 # The hidraw node is effectively single-open. Each poll cycle builds a fresh
 # adapter instance, so a per-instance lock can't serialize a scheduled poll
@@ -775,12 +837,23 @@ class USBUPSAdapter(BaseAdapter):
         return await loop.run_in_executor(None, self._diagnostics_sync)
 
     def _diagnostics_sync(self) -> dict:
-        import hid
+        # The environment probe never opens via hidapi, so it works even when
+        # the device won't open — that's exactly the case we're debugging.
+        out = {"environment": _usb_environment(self.vid, self.pid)}
+        try:
+            import hid
+        except Exception as exc:
+            out["open_error"] = f"hidapi import failed: {exc}"
+            return out
         # Same process-wide lock as _read_all_sync — a diagnostics call must not
         # open the device while a poll holds it (that EBUSY was what made the
         # device "disappear" mid-test).
-        with _USB_LOCK:
-            return self._diagnostics_locked(hid)
+        try:
+            with _USB_LOCK:
+                out.update(self._diagnostics_locked(hid))
+        except Exception as exc:
+            out["open_error"] = f"{type(exc).__name__}: {exc}"
+        return out
 
     def _diagnostics_locked(self, hid) -> dict:
         dev, (vid, pid) = self._open_device(hid)
