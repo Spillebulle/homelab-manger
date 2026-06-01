@@ -20,20 +20,17 @@ COPY frontend/ ./frontend/
 RUN mkdir -p /data
 VOLUME ["/data"]
 
-# USB-connected UPS support: to let the `usbups` adapter read a UPS plugged
-# into the host, give the container access to the host USB tree at run time.
-# Prefer a BIND MOUNT over --device: cheap UPS USB stacks periodically
-# re-enumerate (new /dev/bus/usb devnum), and --device only maps nodes that
-# existed at container start — so a re-enumerated UPS becomes invisible and
-# every open fails until restart. A bind mount keeps new nodes visible:
-#   docker run -p 8080:8080 \
-#     -v /dev/bus/usb:/dev/bus/usb \
-#     --device-cgroup-rule='c 189:* rmw' \
-#     -v homelab-data:/data homelab-manger
-# (189 = USB major; or just use --privileged). The process opens the device's
-# hidraw node and may issue a USBDEVFS_RESET to recover a wedged UPS, both of
-# which need root in the container (the default here) plus the cgroup access
-# above.
+# USB-connected UPS support: bind-mount the WHOLE host /dev (read-only is fine)
+# and run --privileged, e.g.:
+#   docker run -p 8080:8080 --privileged \
+#     -v /dev:/dev:ro -v homelab-data:/data homelab-manger
+# Why all of /dev, not just /dev/bus/usb: hidapi reads the UPS via its
+# /dev/hidrawN node. A UPS re-enumerates to a NEW hidraw node over time; a
+# /dev/bus/usb-only mount (or --device) misses /dev/hidraw* and only snapshots
+# /dev at container start, so a re-enumerated UPS becomes invisible and every
+# open fails until restart. A live /dev bind keeps the new node visible. :ro
+# still permits opening device nodes (the kernel exempts char devices from the
+# read-only check) and the USB reset / autosuspend writes go to usbfs/sysfs.
 
 ENV DB_PATH=/data/homelab.db
 ENV PYTHONUNBUFFERED=1

@@ -419,15 +419,16 @@ class USBUPSAdapter(BaseAdapter):
             "service": "Container USB access",
             "transport": "docker",
             "port": 0,
-            "description": "Run the container with the host USB tree exposed and "
-                           "privilege to open/reset it. Recommended flags: "
-                           "-v /dev/bus/usb:/dev/bus/usb  "
-                           "--device-cgroup-rule='c 189:* rmw'   (or --privileged). "
-                           "Use a bind mount (-v), NOT --device: it keeps the UPS "
-                           "visible after a USB re-enumeration, which otherwise "
-                           "drops it offline until restart. Root in the container "
-                           "(the default) is needed to open the hidraw node, "
-                           "disable USB autosuspend, and issue a USB reset.",
+            "description": "Bind-mount the WHOLE host /dev — not just /dev/bus/usb: "
+                           "-v /dev:/dev:ro   (read-only is fine), plus --privileged. "
+                           "hidapi reads the UPS via its /dev/hidrawN node, and a UPS "
+                           "re-enumerates to a NEW hidraw node over time; a "
+                           "/dev/bus/usb-only mount (or --device) misses hidraw and "
+                           "snapshots /dev at start, so the UPS drops offline after "
+                           "re-enumeration until restart. A live /dev bind keeps the "
+                           "new node visible. :ro still allows opening device nodes "
+                           "(Linux exempts char devices from the read-only check); it "
+                           "only blocks creating nodes, which the host does anyway.",
             "required": True,
         },
     ]
