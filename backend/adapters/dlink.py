@@ -19,6 +19,15 @@ _DLINK_POE_VOLTAGE    = "1.3.6.1.4.1.171.12.18.2.1.1.13"  # millivolts
 _DLINK_POE_CURRENT    = "1.3.6.1.4.1.171.12.18.2.1.1.14"  # milliamps
 _DLINK_POE_MAX_POWER  = "1.3.6.1.4.1.171.12.18.2.1.1.8"   # max milliwatts configured
 
+# D-Link private environment MIB — current chassis temperature in °C, indexed
+# per stack unit (swDevEnvTemperatureCurrent). The standard ENTITY-SENSOR-MIB
+# (1.3.6.1.2.1.99) is EMPTY on DGS-3120 R4.x, so this is the only temperature
+# source. Confirmed on a real DGS-3120-48PC (col .2 = current, .3 = high
+# threshold, .4 = low threshold). These switches expose NO total-power-draw
+# counter anywhere (verified: empty ENTITY-SENSOR-MIB + empty PoE main
+# consumption), only PoE delivered and this temperature.
+_DLINK_TEMP_CURRENT   = "1.3.6.1.4.1.171.12.11.1.8.1.2"
+
 # Entity MIB — entPhysicalName. DGS-3120 firmware names physical ports "Port N",
 # including SFP cages with no module inserted (which are absent from IF-MIB).
 _ENT_PHYSICAL_NAME    = "1.3.6.1.2.1.47.1.1.1.1.7"
@@ -109,6 +118,10 @@ class DLinkAdapter(SNMPAdapter):
         # authoritative. Best-effort: any SSH failure leaves the SNMP value.
         if not base.get("online"):
             return base
+        # Current chassis temperature (D-Link private MIB; SNMP, cheap).
+        temp = await self._temperature()
+        if temp is not None:
+            base["temperature"] = temp
         try:
             result = await self._cli("show ipif")
         except Exception:
@@ -118,6 +131,22 @@ class DLinkAdapter(SNMPAdapter):
             if m:
                 base["ipOrigin"] = m.group(1).lower()  # "dhcp" or "manual"
         return base
+
+    async def _temperature(self) -> int | None:
+        """Hottest current unit temperature in °C from the D-Link private env
+        MIB. Indexed per stack unit; we report the max. Best-effort — returns
+        None on any SNMP failure or if the table is empty."""
+        try:
+            rows = await _walk(self.hostname, self.community, _DLINK_TEMP_CURRENT, self.port)
+        except Exception:
+            return None
+        temps = []
+        for _oid, val in rows:
+            try:
+                temps.append(int(val))
+            except (TypeError, ValueError):
+                continue
+        return max(temps) if temps else None
 
     async def _ports(self) -> list[dict]:
         ports = await super()._ports()

@@ -3168,6 +3168,7 @@
           mac:        'MAC',
           firmware:   'Firmware',
           serial:     'Serial Number',
+          temperature: 'Temperature',
           // Servers (Redfish / iBMC / iLO / iDRAC / CIMC)
           manufacturer: 'Manufacturer',
           model:        'Model',
@@ -3182,12 +3183,13 @@
         const formatters = {
           ipOrigin: v => v === 'dhcp' ? 'Enabled' : v === 'manual' ? 'Disabled (static)' : v,
           mac: v => String(v).toUpperCase(),
+          temperature: v => `${v} °C`,
         };
         // Display order: identity → uptime → network → hardware identity.
         // Server keys go after the switch keys; for server data, switch keys
         // are absent so servers effectively start at `manufacturer`.
         const order = [
-          'sysName','sysUptime','ipAddress','subnetMask','gateway','ipOrigin','mac','firmware','serial',
+          'sysName','sysUptime','ipAddress','subnetMask','gateway','ipOrigin','mac','firmware','serial','temperature',
           'manufacturer','model','hostname','powerState','health','bmcIp','bmcFirmware','biosVersion','uuid',
         ];
         const entries = Object.entries(s).filter(([k,v]) => !exclude.has(k) && v != null && v !== '');
