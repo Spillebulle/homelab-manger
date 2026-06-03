@@ -583,31 +583,29 @@ def get_history(
     metrics: str | None = None,
     hours: float = 24.0,
     max_points: int = 600,
+    from_: str | None = Query(None, alias="from"),
+    to_: str | None = Query(None, alias="to"),
     db: Session = Depends(get_db),
 ):
     """Time-series history for graphing. `metrics` is a comma-separated list
-    (default: every metric the device has recorded); `hours` is the look-back
-    window. Series longer than `max_points` are bucket-averaged. Shape:
+    (default: every metric the device has recorded). The window is either the
+    last `hours` (default 24) OR an explicit `from`/`to` (epoch-ms / epoch-s /
+    ISO — same parsing as `/graph`) for a custom range. Series longer than
+    `max_points` are bucket-averaged. Shape:
     {from, to, metrics: {name: [[iso_ts, value], …]}}."""
     _device_or_404(device_id, db)
-    since = datetime.utcnow() - timedelta(hours=max(0.0, hours))
+    until = _parse_time_param(to_) or datetime.utcnow()
+    since = _parse_time_param(from_)
+    if since is None:
+        since = until - timedelta(hours=max(0.0, hours))
+    if since > until:
+        since, until = until, since
     wanted = [m.strip() for m in metrics.split(",") if m.strip()] if metrics else None
 
-    q = db.query(DeviceMetric).filter(
-        DeviceMetric.device_id == device_id,
-        DeviceMetric.ts >= since,
-    )
-    if wanted:
-        q = q.filter(DeviceMetric.metric.in_(wanted))
-    rows = q.order_by(DeviceMetric.ts.asc()).all()
-
-    series: dict[str, list[tuple]] = {}
-    for r in rows:
-        series.setdefault(r.metric, []).append((r.ts, r.value))
-
+    series = _load_metric_series(device_id, wanted, since, until, db)
     return {
         "from": _iso_z(since),
-        "to": _iso_z(datetime.utcnow()),
+        "to": _iso_z(until),
         "metrics": {m: _downsample(pts, max_points) for m, pts in series.items()},
     }
 

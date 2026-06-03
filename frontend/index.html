@@ -305,15 +305,32 @@
             <!-- ── UPS Graphs ── -->
             <template x-if="tab === 'graphs'">
               <div x-init="$nextTick(() => initUpsGraphs())">
-                <div class="flex items-center justify-between mb-4">
+                <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
                   <span class="text-sm text-gray-400">Power history</span>
                   <div class="flex gap-1 text-xs">
-                    <template x-for="r in upsRanges" :key="r.hours">
-                      <button @click="upsRangeHours = r.hours; loadUpsHistory()"
-                              :class="upsRangeHours === r.hours ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'"
+                    <template x-for="r in upsRanges" :key="r.label">
+                      <button @click="upsCustom.active = false; upsRangeHours = r.hours; loadUpsHistory()"
+                              :class="(!upsCustom.active && upsRangeHours === r.hours) ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'"
                               class="px-2.5 py-1 rounded transition-colors" x-text="r.label"></button>
                     </template>
+                    <button @click="toggleUpsCustom()"
+                            :class="upsCustom.active ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'"
+                            class="px-2.5 py-1 rounded transition-colors">
+                      <i class="fa-solid fa-sliders mr-1"></i>Custom
+                    </button>
                   </div>
+                </div>
+                <!-- Custom range picker -->
+                <div x-show="upsCustom.active" class="flex items-end flex-wrap gap-2 mb-4 text-xs">
+                  <div>
+                    <label class="block text-gray-500 mb-0.5">From</label>
+                    <input type="datetime-local" x-model="upsCustom.from" class="input py-1">
+                  </div>
+                  <div>
+                    <label class="block text-gray-500 mb-0.5">To</label>
+                    <input type="datetime-local" x-model="upsCustom.to" class="input py-1">
+                  </div>
+                  <button @click="loadUpsHistory()" class="btn-primary py-1">Apply</button>
                 </div>
                 <div x-show="upsHistoryEmpty" class="text-sm text-gray-500 bg-card border border-border rounded-lg p-6 text-center">
                   No samples yet — graphs populate as the poller collects data (one sample per minute).
@@ -1910,7 +1927,11 @@
         { label: '6h', hours: 6 },
         { label: '24h', hours: 24 },
         { label: '7d', hours: 168 },
+        { label: '30d', hours: 720 },
       ],
+      // Custom range (Grafana-style). When active, from/to (datetime-local
+      // strings) drive the window instead of upsRangeHours.
+      upsCustom: { active: false, from: '', to: '' },
 
       // ── UPS shutdown plan ─────────────────────────────────────────────────
       shutdownRules:   [],
@@ -2338,57 +2359,118 @@
         await this.loadUpsHistory();
       },
 
+      // datetime-local string ("YYYY-MM-DDTHH:MM") for an input, in local time.
+      _toLocalInput(d) {
+        const p = n => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+      },
+
+      toggleUpsCustom() {
+        this.upsCustom.active = !this.upsCustom.active;
+        if (this.upsCustom.active) {
+          if (!this.upsCustom.from || !this.upsCustom.to) {
+            const now = new Date();
+            this.upsCustom.to = this._toLocalInput(now);
+            this.upsCustom.from = this._toLocalInput(new Date(now.getTime() - 24 * 3600000));
+          }
+          this.loadUpsHistory();
+        } else {
+          this.loadUpsHistory();
+        }
+      },
+
+      // Convert a [[iso, val], …] series to Chart.js {x:ms, y} points, inserting
+      // a null break wherever the gap between consecutive samples is much larger
+      // than the typical spacing — so a polling outage shows as an actual gap
+      // instead of the line (and time axis) pretending it was continuous.
+      _withGaps(pairs, toY) {
+        const pts = (pairs || []).map(p => ({
+          x: new Date(p[0]).getTime(),
+          y: toY ? toY(p[1]) : p[1],
+        }));
+        if (pts.length < 3) return pts;
+        const deltas = [];
+        for (let i = 1; i < pts.length; i++) deltas.push(pts[i].x - pts[i-1].x);
+        const sorted = [...deltas].sort((a, b) => a - b);
+        const median = sorted[Math.floor(sorted.length / 2)] || 60000;
+        const gapThreshold = Math.max(median * 2.5, median + 60000);
+        const out = [];
+        for (let i = 0; i < pts.length; i++) {
+          if (i > 0 && (pts[i].x - pts[i-1].x) > gapThreshold) {
+            out.push({ x: pts[i-1].x + median, y: null });  // break the line here
+          }
+          out.push(pts[i]);
+        }
+        return out;
+      },
+
       async loadUpsHistory() {
         if (!this.selectedId) return;
+        let qs;
+        if (this.upsCustom.active && this.upsCustom.from && this.upsCustom.to) {
+          // datetime-local is local time; getTime() → correct epoch-ms, which
+          // the backend accepts unambiguously (no timezone guessing).
+          qs = `from=${new Date(this.upsCustom.from).getTime()}&to=${new Date(this.upsCustom.to).getTime()}`;
+        } else {
+          qs = `hours=${this.upsRangeHours}`;
+        }
         let data;
         try {
-          const r = await fetch(`/api/devices/${this.selectedId}/history?hours=${this.upsRangeHours}`);
+          const r = await fetch(`/api/devices/${this.selectedId}/history?${qs}`);
           if (!r.ok) return;
           data = await r.json();
         } catch (e) { return; }
         const m = data.metrics || {};
         this.upsHistoryEmpty = !Object.values(m).some(s => s && s.length);
-        // Build a shared label axis from the longest series' timestamps.
-        const fmt = (iso) => {
-          const d = new Date(iso);
-          return this.upsRangeHours > 48
-            ? d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit' })
-            : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        };
-        const series = (key) => (m[key] || []);
-        const labelsFrom = (key) => series(key).map(p => fmt(p[0]));
-        const vals = (key) => series(key).map(p => p[1]);
-        const runtimeMin = series('runtime_sec').map(p => [p[0], Math.round(p[1] / 60 * 10) / 10]);
+        // Pin the axis to the requested window so gaps at the ends are visible.
+        const xMin = new Date(data.from).getTime();
+        const xMax = new Date(data.to).getTime();
 
-        this._renderChart('upsChartPower', labelsFrom('load_pct'), [
-          { label: 'Load %', data: vals('load_pct'), color: '#60a5fa', axis: 'y' },
-          { label: 'Watts',  data: vals('watts'),    color: '#f59e0b', axis: 'y1' },
-        ], { y: { title: '%', max: 100 }, y1: { title: 'W', right: true } });
+        this._renderChart('upsChartPower', [
+          { label: 'Load %', points: this._withGaps(m.load_pct), color: '#60a5fa', axis: 'y' },
+          { label: 'Watts',  points: this._withGaps(m.watts),    color: '#f59e0b', axis: 'y1' },
+        ], { y: { title: '%', max: 100 }, y1: { title: 'W', right: true } }, xMin, xMax);
 
-        this._renderChart('upsChartCharge', labelsFrom('charge_pct'), [
-          { label: 'Charge %', data: vals('charge_pct'), color: '#34d399', axis: 'y', fill: true },
-        ], { y: { title: '%', max: 100 } });
+        this._renderChart('upsChartCharge', [
+          { label: 'Charge %', points: this._withGaps(m.charge_pct), color: '#34d399', axis: 'y', fill: true },
+        ], { y: { title: '%', max: 100 } }, xMin, xMax);
 
-        this._renderChart('upsChartRuntime', runtimeMin.map(p => fmt(p[0])), [
-          { label: 'Runtime (min)', data: runtimeMin.map(p => p[1]), color: '#a78bfa', axis: 'y' },
-        ], { y: { title: 'min' } });
+        this._renderChart('upsChartRuntime', [
+          { label: 'Runtime (min)', points: this._withGaps(m.runtime_sec, v => Math.round(v / 60 * 10) / 10), color: '#a78bfa', axis: 'y' },
+        ], { y: { title: 'min' } }, xMin, xMax);
 
-        this._renderChart('upsChartVoltage', labelsFrom('input_voltage'), [
-          { label: 'Input V', data: vals('input_voltage'), color: '#f472b6', axis: 'y' },
-        ], { y: { title: 'V' } });
+        this._renderChart('upsChartVoltage', [
+          { label: 'Input V', points: this._withGaps(m.input_voltage), color: '#f472b6', axis: 'y' },
+        ], { y: { title: 'V' } }, xMin, xMax);
       },
 
       // Chart instances live on `window` (not Alpine state) so Alpine's reactive
       // proxy never wraps the Chart objects — wrapping breaks Chart.js's
-      // internal canvas/ref identity checks.
-      _renderChart(canvasId, labels, datasets, axes) {
+      // internal canvas/ref identity checks. Uses a LINEAR x-axis of epoch-ms so
+      // points sit at their real time (gaps show as empty space) with `spanGaps:
+      // false` breaking the line at the null markers _withGaps inserts.
+      _renderChart(canvasId, datasets, axes, xMin, xMax) {
         if (typeof Chart === 'undefined') return;
         const el = document.getElementById(canvasId);
         if (!el) return;
         window.__upsCharts = window.__upsCharts || {};
         if (window.__upsCharts[canvasId]) window.__upsCharts[canvasId].destroy();
+
+        const spanH = (xMax - xMin) / 3600000;
+        const fmt = (ms) => {
+          const d = new Date(ms);
+          const t = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          return spanH > 48
+            ? d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + t
+            : t;
+        };
         const scales = {
-          x: { ticks: { color: '#6b7280', maxTicksLimit: 8, font: { size: 9 } }, grid: { color: '#2a3144' } },
+          x: {
+            type: 'linear', min: xMin, max: xMax,
+            ticks: { color: '#6b7280', maxTicksLimit: 7, font: { size: 9 },
+                     callback: v => fmt(v) },
+            grid: { color: '#2a3144' },
+          },
         };
         for (const [id, cfg] of Object.entries(axes)) {
           scales[id] = {
@@ -2403,17 +2485,20 @@
         window.__upsCharts[canvasId] = new Chart(el, {
           type: 'line',
           data: {
-            labels,
             datasets: datasets.map(d => ({
-              label: d.label, data: d.data, yAxisID: d.axis,
+              label: d.label, data: d.points, yAxisID: d.axis,
               borderColor: d.color, backgroundColor: d.fill ? d.color + '33' : d.color,
               fill: !!d.fill, tension: 0.25, pointRadius: 0, borderWidth: 1.5,
+              spanGaps: false,
             })),
           },
           options: {
             responsive: true, maintainAspectRatio: false, animation: false,
             interaction: { intersect: false, mode: 'index' },
-            plugins: { legend: { labels: { color: '#9ca3af', boxWidth: 12, font: { size: 10 } } } },
+            plugins: {
+              legend: { labels: { color: '#9ca3af', boxWidth: 12, font: { size: 10 } } },
+              tooltip: { callbacks: { title: items => items.length ? fmt(items[0].parsed.x) : '' } },
+            },
             scales,
           },
         });
