@@ -48,6 +48,7 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate_device_cache_unique(engine)
     _migrate_add_poll_interval(engine)
+    _migrate_add_shutdown_rule_ordering(engine)
     _migrate_credentials_to_encrypted(engine)
 
 
@@ -61,6 +62,22 @@ def _migrate_add_poll_interval(engine):
         if "poll_interval" not in cols:
             conn.execute(text("ALTER TABLE devices ADD COLUMN poll_interval INTEGER"))
             logger.warning("devices: added poll_interval column on startup")
+
+
+def _migrate_add_shutdown_rule_ordering(engine):
+    """Add `priority` + `delay_after_sec` to pre-existing `shutdown_rules`
+    tables (outage-orchestration ordering). Same ALTER-by-hand pattern as
+    poll_interval — create_all never alters existing tables. Idempotent."""
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(shutdown_rules)")).fetchall()]
+        if not cols:
+            return  # table doesn't exist yet → create_all already made it with the columns
+        if "priority" not in cols:
+            conn.execute(text("ALTER TABLE shutdown_rules ADD COLUMN priority INTEGER NOT NULL DEFAULT 100"))
+            logger.warning("shutdown_rules: added priority column on startup")
+        if "delay_after_sec" not in cols:
+            conn.execute(text("ALTER TABLE shutdown_rules ADD COLUMN delay_after_sec INTEGER NOT NULL DEFAULT 0"))
+            logger.warning("shutdown_rules: added delay_after_sec column on startup")
 
 
 def _migrate_device_cache_unique(engine):

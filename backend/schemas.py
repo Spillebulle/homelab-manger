@@ -36,6 +36,8 @@ class ShutdownRuleCreate(BaseModel):
     trigger_charge_pct: Optional[int] = None
     trigger_runtime_sec: Optional[int] = None
     enabled: bool = True
+    priority: int = 100             # lower fires first during an outage
+    delay_after_sec: int = 0        # wait after this rule before the next
 
 
 class ShutdownRuleUpdate(BaseModel):
@@ -43,6 +45,8 @@ class ShutdownRuleUpdate(BaseModel):
     trigger_charge_pct: Optional[int] = None
     trigger_runtime_sec: Optional[int] = None
     enabled: Optional[bool] = None
+    priority: Optional[int] = None
+    delay_after_sec: Optional[int] = None
 
 
 class NotificationConfigUpdate(BaseModel):

@@ -383,19 +383,45 @@ class DLinkAdapter(SNMPAdapter):
         return out
 
     _VLAN_NAME_RE = re.compile(r"^[A-Za-z0-9_\-]{1,32}$")
+    # A port spec is interpolated raw into an SSH CLI command, so it must not
+    # carry shell/command metacharacters. Legitimate DGS-3120 specs are bare
+    # ifIndex (`5`), unit:port (`1:5`), ranges (`1-48`, `1:1-1:48`) and
+    # comma-lists — all covered by digits, colon, hyphen, comma. The UI only
+    # ever sends numeric ports; this guards the API-key path against injection.
+    _PORT_SPEC_RE = re.compile(r"^[0-9:,\-]{1,40}$")
+
+    def _safe_port(self, action: dict):
+        """Return (port_str, None) if the action's port_id is a safe spec, else
+        (None, error_dict)."""
+        port = str(action.get("port_id", "")).strip()
+        if not self._PORT_SPEC_RE.match(port):
+            return None, {"error": f"Invalid port id: {port!r}"}
+        return port, None
 
     async def execute_action(self, action: dict) -> dict:
         atype = action.get("type")
         if atype == "port_poe":
+            port, err = self._safe_port(action)
+            if err:
+                return err
             return await self._cli(
-                f"config poe ports {action['port_id']} state {'enable' if action.get('enable', True) else 'disable'}"
+                f"config poe ports {port} state {'enable' if action.get('enable', True) else 'disable'}"
             )
         if atype == "port_description":
-            desc = action.get("description", "").replace('"', "")
-            return await self._cli(f'config ports {action["port_id"]} description "{desc}"')
+            port, err = self._safe_port(action)
+            if err:
+                return err
+            # Strip the quote that would break out of the quoted argument and any
+            # CR/LF that would inject a second CLI command line. Other chars are
+            # legitimate description text (they stay literal inside the quotes).
+            desc = action.get("description", "").replace('"', "").replace("\r", "").replace("\n", "")
+            return await self._cli(f'config ports {port} description "{desc}"')
         if atype == "port_poe_limit":
+            port, err = self._safe_port(action)
+            if err:
+                return err
             mw = int(action.get("milliwatts", 15400))
-            return await self._cli(f"config poe ports {action['port_id']} max_power {mw}")
+            return await self._cli(f"config poe ports {port} max_power {mw}")
         if atype == "ssh_command":
             return await self._cli(action.get("command", ""))
         if atype == "vlan_create":

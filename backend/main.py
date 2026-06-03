@@ -12,6 +12,7 @@ import httpx
 from fastapi import APIRouter, FastAPI, HTTPException, Depends, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -43,6 +44,13 @@ from .auth import (
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Quiet the chatty third-party loggers. At INFO they drown the log: httpx emits a
+# line per Redfish/Discord request (and that includes the full webhook URL — a
+# secret — in plaintext), and paramiko logs every SSH connect/auth. Our own
+# loggers stay at INFO so device-poll warnings and events remain visible.
+for _noisy in ("httpx", "httpcore", "paramiko", "paramiko.transport", "urllib3", "pysnmp"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 # ── Connection Manager for WebSockets ────────────────────────────────────────
 
@@ -169,11 +177,69 @@ def app_version():
     }
 
 
+# Unauthenticated container/orchestration health probe. Confirms the process is
+# up AND the SQLite DB is reachable (a wedged DB is the realistic failure mode);
+# the Dockerfile HEALTHCHECK hits this. Returns 503 so Docker marks the
+# container unhealthy and can restart it.
+@app.get("/healthz")
+def healthz(db: Session = Depends(get_db)):
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception as exc:
+        logger.error("healthz DB check failed: %s", exc)
+        return JSONResponse(status_code=503, content={"status": "error", "db": False})
+    return {"status": "ok", "db": True, "version": APP_VERSION}
+
+
+# ── Login brute-force throttle ───────────────────────────────────────────────
+# Single-user homelab app, but an exposed login with unlimited guesses is an easy
+# win for a bot. Track failed attempts per client IP in-memory (no persistence —
+# a restart clears it, which is fine) and lock out after _LOGIN_MAX_FAILS within
+# _LOGIN_WINDOW. Successful login clears the counter.
+_LOGIN_MAX_FAILS = 5
+_LOGIN_WINDOW = 300          # seconds to remember failures / lockout duration
+_login_fails: dict[str, list[float]] = {}
+_login_lock = Lock()
+
+
+def _login_client_key(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _login_throttle_check(key: str) -> None:
+    now = time.monotonic()
+    with _login_lock:
+        hits = [t for t in _login_fails.get(key, []) if now - t < _LOGIN_WINDOW]
+        _login_fails[key] = hits
+        if len(hits) >= _LOGIN_MAX_FAILS:
+            retry = int(_LOGIN_WINDOW - (now - hits[0]))
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many failed login attempts. Try again later.",
+                headers={"Retry-After": str(max(retry, 1))},
+            )
+
+
+def _login_record_fail(key: str) -> None:
+    now = time.monotonic()
+    with _login_lock:
+        _login_fails.setdefault(key, []).append(now)
+
+
+def _login_clear(key: str) -> None:
+    with _login_lock:
+        _login_fails.pop(key, None)
+
+
 @auth_router.post("/login")
 def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    key = _login_client_key(request)
+    _login_throttle_check(key)
     user = authenticate(db, body.username, body.password)
     if not user:
+        _login_record_fail(key)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    _login_clear(key)
     request.session[SESSION_USER_KEY] = user.username
     return {"ok": True, "username": user.username}
 
@@ -469,6 +535,8 @@ def _serialize_rule(r: ShutdownRule, db: Session) -> dict:
         "trigger_charge_pct": r.trigger_charge_pct,
         "trigger_runtime_sec": r.trigger_runtime_sec,
         "enabled": r.enabled,
+        "priority": r.priority,
+        "delay_after_sec": r.delay_after_sec,
         "last_triggered_at": _iso_z(r.last_triggered_at) if r.last_triggered_at else None,
     }
 
@@ -478,7 +546,7 @@ def list_shutdown_rules(ups_id: int, db: Session = Depends(get_db)):
     _device_or_404(ups_id, db)
     rules = (db.query(ShutdownRule)
              .filter(ShutdownRule.ups_device_id == ups_id)
-             .order_by(ShutdownRule.id).all())
+             .order_by(ShutdownRule.priority, ShutdownRule.id).all())
     return [_serialize_rule(r, db) for r in rules]
 
 
@@ -505,6 +573,7 @@ def create_shutdown_rule(ups_id: int, body: ShutdownRuleCreate, db: Session = De
         action=action,
         trigger_charge_pct=body.trigger_charge_pct,
         trigger_runtime_sec=body.trigger_runtime_sec, enabled=body.enabled,
+        priority=body.priority, delay_after_sec=body.delay_after_sec,
     )
     db.add(rule)
     db.commit()
@@ -542,6 +611,17 @@ def delete_shutdown_rule(rule_id: int, db: Session = Depends(get_db)):
     db.delete(r)
     db.commit()
     return {"ok": True}
+
+
+@api.post("/devices/{ups_id}/shutdown-rules/test")
+async def test_shutdown_plan(ups_id: int, db: Session = Depends(get_db)):
+    """Dry-run the outage plan: simulate a full outage and report which rules
+    would fire, in order — without sending any action to a device. Emits a
+    `[Dry run]` event per rule (so notifications also get exercised) and nothing
+    is stamped/armed. Lets the user sanity-check the plan before relying on it."""
+    ups = _device_or_404(ups_id, db)
+    plan = await poller.dry_run_shutdown_plan(db, ups)
+    return {"ok": True, "dry_run": True, "count": len(plan), "plan": plan}
 
 
 @api.post("/devices/{device_id}/refresh")

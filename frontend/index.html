@@ -390,6 +390,11 @@
                     </template>
                     <span x-show="!shutdownLastAction" class="text-gray-500 italic">none yet</span>
                   </div>
+                  <button @click="testShutdownPlan()" :disabled="!shutdownRules.length || shutdownTesting"
+                          title="Simulate an outage — shows what would fire, sends nothing to any device"
+                          class="btn-secondary text-xs whitespace-nowrap disabled:opacity-50">
+                    <i class="fa-solid fa-flask mr-1"></i><span x-text="shutdownTesting ? 'Testing…' : 'Test plan (dry run)'"></span>
+                  </button>
                   <button @click="openEventsModal(selectedId, null, (selectedDevice?.name || 'UPS') + ' — event log')"
                           class="btn-secondary text-xs whitespace-nowrap">
                     <i class="fa-solid fa-clock-rotate-left mr-1"></i>View log
@@ -420,9 +425,11 @@
                     <thead class="text-xs text-gray-500 border-b border-border">
                       <tr>
                         <th class="text-left font-medium py-2 pr-3">Device</th>
+                        <th class="text-left font-medium py-2 px-3" title="Lower fires first during an outage">Order</th>
                         <th class="text-left font-medium py-2 px-3">Action</th>
                         <th class="text-left font-medium py-2 px-3">When charge ≤</th>
                         <th class="text-left font-medium py-2 px-3">When runtime ≤</th>
+                        <th class="text-left font-medium py-2 px-3" title="Wait after this device before the next one fires">Then wait</th>
                         <th class="text-center font-medium py-2 px-3">On</th>
                         <th class="py-2 pl-3"></th>
                       </tr>
@@ -437,6 +444,11 @@
                               <span x-show="rule.last_triggered_at" class="text-amber-400"
                                     x-text="'· fired ' + relTime(rule.last_triggered_at)"></span>
                             </div>
+                          </td>
+                          <td class="py-2 px-3 whitespace-nowrap">
+                            <input type="number" min="0" x-model.number="rule.priority"
+                                   @change="updateShutdownRule(rule)"
+                                   class="input py-1 w-16 inline-block">
                           </td>
                           <td class="py-2 px-3">
                             <select x-model="rule.action" @change="updateShutdownRule(rule)" class="input py-1">
@@ -454,6 +466,11 @@
                             <input type="number" min="0" x-model="rule._runtimeMin"
                                    @change="updateShutdownRule(rule)"
                                    class="input py-1 w-20 inline-block" placeholder="—"> min
+                          </td>
+                          <td class="py-2 px-3 whitespace-nowrap">
+                            <input type="number" min="0" x-model.number="rule.delay_after_sec"
+                                   @change="updateShutdownRule(rule)"
+                                   class="input py-1 w-16 inline-block"> s
                           </td>
                           <td class="py-2 px-3 text-center">
                             <input type="checkbox" x-model="rule.enabled" @change="updateShutdownRule(rule)"
@@ -1937,6 +1954,7 @@
       shutdownRules:   [],
       shutdownAddTarget: '',
       shutdownLastAction: null,
+      shutdownTesting: false,
 
       // ── events log + notifications ────────────────────────────────────────
       eventsModal: { show: false, events: [], title: '' },
@@ -2256,9 +2274,29 @@
             trigger_charge_pct: isNaN(charge) ? null : charge,
             trigger_runtime_sec: (runMin == null || isNaN(runMin)) ? null : runMin * 60,
             enabled: rule.enabled,
+            priority: (rule.priority == null || isNaN(rule.priority)) ? 100 : Math.max(0, parseInt(rule.priority, 10)),
+            delay_after_sec: (rule.delay_after_sec == null || isNaN(rule.delay_after_sec)) ? 0 : Math.max(0, parseInt(rule.delay_after_sec, 10)),
           }),
         });
         await this.loadShutdownRules();
+      },
+
+      async testShutdownPlan() {
+        if (!this.shutdownRules.length) return;
+        this.shutdownTesting = true;
+        try {
+          const r = await fetch(`/api/devices/${this.selectedId}/shutdown-rules/test`, { method: 'POST' });
+          const d = await r.json().catch(() => ({}));
+          if (r.ok) {
+            const names = (d.plan || []).map(p => p.target_name).filter(Boolean).join(' → ');
+            this.showToast(`Dry run: ${d.count} device(s) would shut down${names ? ' — ' + names : ''}. Nothing was sent.`);
+            await this.loadShutdownRules();
+          } else {
+            this.showToast(d.detail || 'Test failed', 'error');
+          }
+        } finally {
+          this.shutdownTesting = false;
+        }
       },
 
       deleteShutdownRule(rule) {

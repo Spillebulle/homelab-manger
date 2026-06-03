@@ -164,6 +164,12 @@ class ShutdownRule(Base):
     trigger_runtime_sec = Column(Integer, nullable=True)   # fire when runtime(s) <= this
     enabled = Column(Boolean, default=True)
     last_triggered_at = Column(DateTime, nullable=True)    # NULL ⇒ armed
+    # Ordering during an outage: rules fire in ascending `priority` (then id), so
+    # you can bring VMs/hosts down before the host they depend on. After firing a
+    # rule, the orchestrator waits `delay_after_sec` before the next one — time
+    # for a guest OS to finish shutting down before its hypervisor is told to.
+    priority = Column(Integer, nullable=False, default=100)
+    delay_after_sec = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

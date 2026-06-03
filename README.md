@@ -43,7 +43,7 @@
 
 ---
 
-> **Homelab use only.** Device credentials are encrypted at rest (Fernet), but the key lives next to the database, the app is single-user with no rate limiting, and HTTPS is opt-in — so it's still built for a trusted network. Don't expose it to anyone you don't trust.
+> **Homelab use only.** Device credentials are encrypted at rest (Fernet), but the key lives next to the database, the app is single-user (login is brute-force throttled, but the rest of the API isn't rate limited), and HTTPS is opt-in — so it's still built for a trusted network. Don't expose it to anyone you don't trust.
 
 ## Install
 

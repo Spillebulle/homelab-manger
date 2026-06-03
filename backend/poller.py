@@ -138,15 +138,27 @@ _ACTION_LABEL = {
 }
 
 
-async def _execute_shutdown_rule(db, rule, ups_device) -> None:
+async def _execute_shutdown_rule(db, rule, ups_device, dry_run: bool = False) -> None:
     """Run a rule's action on its target device via that device's adapter, and
     record an event (attributed to the UPS so it shows in the UPS log and uses
-    the UPS's notification config)."""
+    the UPS's notification config).
+
+    `dry_run=True` performs no real action and stamps nothing — it just logs and
+    emits a `[Dry run]` event (which still flows through the notification config,
+    so the user can validate their Discord wiring without powering anything off)."""
     label = _ACTION_LABEL.get(rule.action, rule.action)
     target = db.query(Device).filter(Device.id == rule.target_device_id).first()
     if not target:
         logger.error("shutdown rule %d: target device %d no longer exists",
                      rule.id, rule.target_device_id)
+        return
+    if dry_run:
+        logger.warning("OUTAGE ACTION (DRY RUN): would fire rule %d — %s on %r (%s)",
+                       rule.id, rule.action, target.name, target.adapter_type)
+        await emit_event(db, ups_device, EV_ACTION,
+                         f"[Dry run] {label} → {target.name}",
+                         detail="Test only — no action sent to the device.",
+                         severity="info")
         return
     logger.warning("OUTAGE ACTION: firing rule %d — %s on %r (%s)",
                    rule.id, rule.action, target.name, target.adapter_type)
@@ -188,7 +200,7 @@ async def _evaluate_shutdown_rules(db, ups_device, status_data: dict) -> None:
     rules = (db.query(ShutdownRule)
              .filter(ShutdownRule.ups_device_id == ups_device.id,
                      ShutdownRule.enabled.is_(True))
-             .order_by(ShutdownRule.id).all())
+             .order_by(ShutdownRule.priority, ShutdownRule.id).all())
     if not rules:
         return
 
@@ -200,6 +212,10 @@ async def _evaluate_shutdown_rules(db, ups_device, status_data: dict) -> None:
             db.commit()
             logger.warning("UPS %r back on mains — re-armed %d shutdown rule(s)",
                            ups_device.name, len(rearmed))
+            await emit_event(db, ups_device, EV_ACTION,
+                             f"Shutdown rules re-armed ({len(rearmed)})",
+                             detail="UPS back on mains power; rules can fire again next outage.",
+                             severity="info")
         return
 
     charge_pct = status_data.get("charge_pct")
@@ -212,6 +228,36 @@ async def _evaluate_shutdown_rules(db, ups_device, status_data: dict) -> None:
         await _execute_shutdown_rule(db, rule, ups_device)
         rule.last_triggered_at = datetime.utcnow()
         db.commit()
+        # Inter-device delay: give this target time to actually go down before
+        # the next rule fires (e.g. guests before their hypervisor). Capped so a
+        # mistyped value can't wedge this UPS's poll task for an absurd duration.
+        if rule.delay_after_sec and rule.delay_after_sec > 0:
+            await asyncio.sleep(min(int(rule.delay_after_sec), 600))
+
+
+async def dry_run_shutdown_plan(db, ups_device) -> list[dict]:
+    """Simulate a full outage for the test-fire button: walk the UPS's enabled
+    rules in firing order and emit a `[Dry run]` event per rule (no real action,
+    nothing stamped). Returns the ordered plan for the HTTP response."""
+    rules = (db.query(ShutdownRule)
+             .filter(ShutdownRule.ups_device_id == ups_device.id,
+                     ShutdownRule.enabled.is_(True))
+             .order_by(ShutdownRule.priority, ShutdownRule.id).all())
+    plan: list[dict] = []
+    for rule in rules:
+        target = db.query(Device).filter(Device.id == rule.target_device_id).first()
+        await _execute_shutdown_rule(db, rule, ups_device, dry_run=True)
+        plan.append({
+            "rule_id": rule.id,
+            "priority": rule.priority,
+            "action": rule.action,
+            "target_id": rule.target_device_id,
+            "target_name": target.name if target else None,
+            "delay_after_sec": rule.delay_after_sec,
+        })
+    logger.warning("OUTAGE PLAN (DRY RUN) for UPS %r: %d rule(s) would fire",
+                   ups_device.name, len(plan))
+    return plan
 
 
 async def _emit_transition_events(db, device, status_data, status_ok: bool,
@@ -366,32 +412,42 @@ async def poll_loop(on_update=None):
         finally:
             in_flight.discard(device_id)
 
-    while True:
-        db = SessionLocal()
-        try:
-            devices = [(d.id, _device_interval(d))
-                       for d in db.query(Device).filter(Device.enabled.is_(True)).all()]
-        except Exception as exc:
-            logger.error("poll_loop device query failed: %s", exc)
-            devices = []
-        finally:
-            db.close()
+    try:
+        while True:
+            db = SessionLocal()
+            try:
+                devices = [(d.id, _device_interval(d))
+                           for d in db.query(Device).filter(Device.enabled.is_(True)).all()]
+            except Exception as exc:
+                logger.error("poll_loop device query failed: %s", exc)
+                devices = []
+            finally:
+                db.close()
 
-        now = time.monotonic()
-        # Drop bookkeeping for devices that are gone/disabled so the dicts
-        # don't grow unbounded as devices come and go.
-        live = {dev_id for dev_id, _ in devices}
-        for stale in [k for k in last_polled if k not in live]:
-            last_polled.pop(stale, None)
+            now = time.monotonic()
+            # Drop bookkeeping for devices that are gone/disabled so the dicts
+            # don't grow unbounded as devices come and go.
+            live = {dev_id for dev_id, _ in devices}
+            for stale in [k for k in last_polled if k not in live]:
+                last_polled.pop(stale, None)
 
-        for device_id, interval in devices:
-            if device_id in in_flight:
-                continue   # still polling from a previous tick — don't overlap
-            if now - last_polled.get(device_id, float("-inf")) >= interval:
-                last_polled[device_id] = now
-                in_flight.add(device_id)
-                t = asyncio.create_task(_run(device_id))
-                tasks.add(t)
-                t.add_done_callback(tasks.discard)
+            for device_id, interval in devices:
+                if device_id in in_flight:
+                    continue   # still polling from a previous tick — don't overlap
+                if now - last_polled.get(device_id, float("-inf")) >= interval:
+                    last_polled[device_id] = now
+                    in_flight.add(device_id)
+                    t = asyncio.create_task(_run(device_id))
+                    tasks.add(t)
+                    t.add_done_callback(tasks.discard)
 
-        await asyncio.sleep(_BASE_TICK)
+            await asyncio.sleep(_BASE_TICK)
+    except asyncio.CancelledError:
+        # Lifespan teardown: cancel the per-device poll tasks we spawned so they
+        # don't outlive the loop ("Task was destroyed but it is pending"). Await
+        # them so any open DB sessions / SSH transports close cleanly.
+        for t in list(tasks):
+            t.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        raise

@@ -23,7 +23,10 @@ action vocabulary.
 
 Two mechanisms authenticate against the same single admin user. Every route under
 `/api/*` is gated **except** the auth/login routes and `/api/version` (see
-[Unauthenticated endpoints](#unauthenticated-endpoints)).
+[Unauthenticated endpoints](#unauthenticated-endpoints)). `GET /healthz`
+(container liveness; pings the DB, returns 200/503) is also open and lives
+outside `/api`. The login route itself is brute-force throttled — 5 failed
+attempts per client IP in 5 minutes returns `429` with `Retry-After`.
 
 The gate (`current_user` in `backend/auth.py`) checks, in order:
 
@@ -87,9 +90,10 @@ key (visible in `GET /api/api-keys`).
 
 | Method | Path | Purpose |
 |--------|------|---------|
+| `GET`  | `/healthz` | Liveness probe (pings the DB). `200 {status:ok,db:true,version}` or `503`. Used by the Docker `HEALTHCHECK`. |
 | `GET`  | `/api/version` | App version + project links. Open so the login page can show it. |
 | `GET`  | `/api/auth/me` | `{ "authenticated": bool, "username": str\|null }` — reports session state. |
-| `POST` | `/api/auth/login` | Body `{username, password}` → sets session cookie, returns `{ok, username}`. 401 on bad creds. |
+| `POST` | `/api/auth/login` | Body `{username, password}` → sets session cookie, returns `{ok, username}`. 401 on bad creds, 429 when throttled. |
 | `POST` | `/api/auth/logout` | Clears the session. `{ok: true}`. |
 
 `GET /api/version`:
@@ -531,10 +535,11 @@ shutdown action (servers) are valid — switches/UPS can't be targets.
 
 | Method | Path | Notes |
 |--------|------|-------|
-| `GET` | `/api/devices/{ups_id}/shutdown-rules` | list rules for this UPS |
+| `GET` | `/api/devices/{ups_id}/shutdown-rules` | list rules for this UPS (ordered by `priority`, then `id`) |
 | `POST` | `/api/devices/{ups_id}/shutdown-rules` | create (201) |
 | `PUT` | `/api/shutdown-rules/{rule_id}` | update (re-arms the rule) |
 | `DELETE` | `/api/shutdown-rules/{rule_id}` | delete |
+| `POST` | `/api/devices/{ups_id}/shutdown-rules/test` | dry-run the plan (sends nothing; see below) |
 
 **Create body:**
 ```json
@@ -543,15 +548,27 @@ shutdown action (servers) are valid — switches/UPS can't be targets.
   "action": "graceful_shutdown",
   "trigger_charge_pct": 20,
   "trigger_runtime_sec": 300,
-  "enabled": true
+  "enabled": true,
+  "priority": 100,
+  "delay_after_sec": 0
 }
 ```
 - `action` — must be one the target supports (`graceful_shutdown` / `power_off`);
   an unsupported value falls back to the target's first supported action.
 - `trigger_charge_pct` / `trigger_runtime_sec` — thresholds, **OR-combined**.
   Either, both, or neither (neither ⇒ fire as soon as on battery).
+- `priority` — lower fires first during an outage (default `100`).
+- `delay_after_sec` — wait after firing this rule before the next (default `0`,
+  capped at 600 s at fire time).
 - Rejections: self-target → `400`; target can't power off → `400`; duplicate rule
   for the same (UPS, target) → `409`.
+
+**Dry run (`POST .../shutdown-rules/test`):** simulates a full outage — walks the
+enabled rules in firing order and emits a `[Dry run]` event per rule (so Discord
+notifications fire too) **without sending any action to a device or arming
+anything**. Use it to validate the plan + notification wiring. Returns
+`{"ok": true, "dry_run": true, "count": N, "plan": [{rule_id, priority, action,
+target_id, target_name, delay_after_sec}, …]}`.
 
 **Response (and list items):**
 ```json
@@ -567,6 +584,8 @@ shutdown action (servers) are valid — switches/UPS can't be targets.
   "trigger_charge_pct": 20,
   "trigger_runtime_sec": 300,
   "enabled": true,
+  "priority": 100,
+  "delay_after_sec": 0,
   "last_triggered_at": null
 }
 ```
