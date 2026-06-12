@@ -173,6 +173,57 @@ class ShutdownRule(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class Integration(Base):
+    """Global third-party integration settings (Nginx Proxy Manager,
+    Namecheap). One row per integration `name`, with the whole config dict
+    stored Fernet-encrypted — same EncryptedJSON column as device
+    credentials, since both integrations hold secrets (NPM admin password,
+    Namecheap API key)."""
+    __tablename__ = "integrations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(40), nullable=False, unique=True)   # 'npm' | 'namecheap'
+    config = Column(EncryptedJSON)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class Service(Base):
+    """A published web service: one subdomain routed through Nginx Proxy
+    Manager to an internal IP:port, with the DNS record created in Namecheap
+    and a Let's Encrypt certificate issued by NPM.
+
+    Provisioning is a 3-step pipeline (DNS record → NPM proxy host → SSL
+    certificate) run as a background task; each step records its own
+    status/detail so a partial failure is visible and retryable — re-running
+    provisioning skips steps already marked `ok`. The created NPM object ids
+    and the exact DNS record we wrote are stored so deletion can clean up
+    precisely what was provisioned and nothing else."""
+    __tablename__ = "services"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    subdomain = Column(String(255), nullable=False)
+    domain = Column(String(255), nullable=False)             # snapshot of the Namecheap domain at creation
+    forward_scheme = Column(String(8), nullable=False, default="http")
+    forward_host = Column(String(255), nullable=False)
+    forward_port = Column(Integer, nullable=False)
+    websockets = Column(Boolean, default=True)
+    # Remote object ids / record identity, for retry-adoption and cleanup.
+    npm_proxy_host_id = Column(Integer, nullable=True)
+    npm_certificate_id = Column(Integer, nullable=True)
+    dns_record_type = Column(String(8), nullable=True)       # CNAME | A (as provisioned)
+    dns_record_target = Column(String(255), nullable=True)
+    # Per-step status: pending | ok | error.
+    dns_status = Column(String(16), nullable=False, default="pending")
+    npm_status = Column(String(16), nullable=False, default="pending")
+    cert_status = Column(String(16), nullable=False, default="pending")
+    dns_detail = Column(Text, nullable=True)
+    npm_detail = Column(Text, nullable=True)
+    cert_detail = Column(Text, nullable=True)
+    state = Column(String(16), nullable=False, default="pending")  # pending | provisioning | active | error
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class ApiKey(Base):
     """A bearer token for programmatic API access, as an alternative to the
     cookie session. Only the SHA-256 hash is stored — the plaintext is shown

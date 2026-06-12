@@ -68,10 +68,17 @@
       <div class="flex-1 overflow-y-auto p-2">
 
         <!-- Dashboard -->
-        <button @click="selectedId = null; tab = 'overview'"
-                :class="!selectedId ? 'bg-blue-600/20 text-blue-300' : 'text-gray-400 hover:bg-card hover:text-gray-200'"
+        <button @click="selectedId = null; page = 'dashboard'; tab = 'overview'"
+                :class="(!selectedId && page !== 'services') ? 'bg-blue-600/20 text-blue-300' : 'text-gray-400 hover:bg-card hover:text-gray-200'"
                 class="w-full flex items-center gap-2 px-3 py-2 rounded text-sm mb-1 transition-colors">
           <i class="fa-solid fa-gauge-high w-4 text-center"></i> Dashboard
+        </button>
+
+        <!-- Services (published apps: DNS + reverse proxy + SSL) -->
+        <button @click="openServices()"
+                :class="(!selectedId && page === 'services') ? 'bg-blue-600/20 text-blue-300' : 'text-gray-400 hover:bg-card hover:text-gray-200'"
+                class="w-full flex items-center gap-2 px-3 py-2 rounded text-sm mb-1 transition-colors">
+          <i class="fa-solid fa-globe w-4 text-center"></i> Services
         </button>
 
         <!-- Device groups -->
@@ -129,7 +136,7 @@
       </div>
 
       <!-- Dashboard -->
-      <template x-if="!selectedId">
+      <template x-if="!selectedId && page !== 'services'">
         <div class="p-6">
           <h1 class="text-2xl font-bold text-white mb-1">Dashboard</h1>
             <p class="text-gray-400 text-sm mb-6">All devices — <span class="text-green-400"><i class="fa-solid fa-bolt"></i> Live updates via WebSocket</span></p>
@@ -157,6 +164,99 @@
             <div x-show="devices.length === 0" class="col-span-full text-center text-gray-500 py-16">
               <i class="fa-solid fa-server text-4xl mb-3"></i>
               <p>No devices yet. Click <strong class="text-gray-300">Add Device</strong> to get started.</p>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- Services (publish apps via Namecheap DNS + Nginx Proxy Manager) -->
+      <template x-if="!selectedId && page === 'services'">
+        <div class="p-6">
+          <div class="flex items-center justify-between flex-wrap gap-2 mb-1">
+            <h1 class="text-2xl font-bold text-white">Services</h1>
+            <div class="flex gap-2">
+              <button @click="openIntegrationsModal()" class="btn-secondary">
+                <i class="fa-solid fa-gear mr-1"></i>Integrations
+              </button>
+              <button @click="openServiceModal()" :disabled="!integrationsReady"
+                      :title="integrationsReady ? '' : 'Configure the NPM + Namecheap integrations first'"
+                      class="btn-primary disabled:opacity-50 disabled:cursor-not-allowed">
+                <i class="fa-solid fa-plus mr-1"></i>Add Service
+              </button>
+            </div>
+          </div>
+          <p class="text-gray-400 text-sm mb-6">
+            Publish an internal app at <span class="font-mono text-gray-300" x-text="'https://name.' + (integrations.namecheap?.domain || 'your-domain')"></span> —
+            the DNS record (Namecheap), reverse proxy and Let's Encrypt certificate (Nginx Proxy Manager) are set up automatically.
+          </p>
+
+          <!-- Integrations-not-configured hint -->
+          <div x-show="!integrationsReady"
+               class="bg-amber-900/20 border border-amber-700/50 rounded-lg p-4 mb-6 text-sm text-amber-200">
+            <i class="fa-solid fa-triangle-exclamation mr-1.5"></i>
+            <span x-show="!integrations.npm?.configured">Nginx Proxy Manager isn't configured yet. </span>
+            <span x-show="!integrations.namecheap?.configured">Namecheap isn't configured yet. </span>
+            Open <button @click="openIntegrationsModal()" class="underline hover:text-white">Integrations</button> to set up the connection details.
+          </div>
+
+          <!-- Service list -->
+          <div class="space-y-3">
+            <template x-for="s in services" :key="s.id">
+              <div class="bg-card border border-border rounded-lg p-4">
+                <div class="flex items-start justify-between flex-wrap gap-3">
+                  <div class="min-w-0">
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <span class="font-semibold text-white text-sm" x-text="s.name"></span>
+                      <span class="text-[11px] px-2 py-0.5 rounded border"
+                            :class="{
+                              'bg-green-500/15 text-green-300 border-green-600/40': s.state === 'active',
+                              'bg-red-500/15 text-red-300 border-red-600/40':       s.state === 'error',
+                              'bg-blue-500/15 text-blue-300 border-blue-600/40':    s.state === 'provisioning' || s.state === 'pending',
+                            }">
+                        <i x-show="s.state === 'provisioning' || s.state === 'pending'" class="fa-solid fa-circle-notch fa-spin mr-1"></i>
+                        <span x-text="s.state === 'active' ? 'Active' : (s.state === 'error' ? 'Error' : 'Provisioning…')"></span>
+                      </span>
+                    </div>
+                    <a :href="s.url" target="_blank" rel="noopener"
+                       class="text-sm text-blue-400 hover:text-blue-300 font-mono break-all" x-text="s.url"></a>
+                    <div class="text-xs text-gray-500 mt-0.5 font-mono"
+                         x-text="'→ ' + s.forward_scheme + '://' + s.forward_host + ':' + s.forward_port"></div>
+                  </div>
+                  <div class="flex items-center gap-2 shrink-0">
+                    <button x-show="s.state === 'error'" @click="retryService(s)"
+                            class="btn-secondary text-xs">
+                      <i class="fa-solid fa-rotate-right mr-1"></i>Retry
+                    </button>
+                    <button @click="deleteService(s)" title="Delete (removes DNS record + proxy host)"
+                            class="text-red-400 hover:text-red-300 px-2 py-1 rounded hover:bg-panel">
+                      <i class="fa-solid fa-trash"></i>
+                    </button>
+                  </div>
+                </div>
+                <!-- Per-step status chips -->
+                <div class="flex flex-wrap gap-2 mt-3">
+                  <template x-for="step in serviceSteps(s)" :key="step.key">
+                    <div class="text-[11px] px-2 py-1 rounded border flex items-center gap-1.5"
+                         :class="stepChipClass(step.status)"
+                         :title="step.detail || ''">
+                      <i class="fa-solid"
+                         :class="{
+                           'fa-check': step.status === 'ok',
+                           'fa-xmark': step.status === 'error',
+                           'fa-hourglass-half': step.status !== 'ok' && step.status !== 'error',
+                         }"></i>
+                      <span x-text="step.label"></span>
+                    </div>
+                  </template>
+                </div>
+                <!-- First error detail, inline so the user doesn't have to hover -->
+                <div x-show="firstServiceError(s)" class="mt-2 text-xs text-red-300 break-words"
+                     x-text="firstServiceError(s)"></div>
+              </div>
+            </template>
+            <div x-show="!services.length" class="text-center text-gray-500 py-16">
+              <i class="fa-solid fa-globe text-4xl mb-3"></i>
+              <p>No services yet. Click <strong class="text-gray-300">Add Service</strong> to publish your first app.</p>
             </div>
           </div>
         </div>
@@ -1674,6 +1774,170 @@
     </div>
   </div>
 
+  <!-- ── Add Service Modal ─────────────────────────────────────────────────── -->
+  <div x-show="serviceModal.show" x-transition class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+    <div @click.stop class="bg-panel border border-border rounded-xl w-full max-w-lg shadow-2xl">
+      <div class="px-6 py-4 border-b border-border flex items-center justify-between">
+        <h2 class="font-semibold text-white">Add Service</h2>
+        <button @click="serviceModal.show = false" class="text-gray-400 hover:text-white">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+      <div class="p-6 space-y-4">
+        <div>
+          <label class="label">Name</label>
+          <input x-model="serviceModal.form.name" class="input w-full" placeholder="e.g. Jellyfin">
+        </div>
+        <div>
+          <label class="label">Public address</label>
+          <div class="flex items-center gap-1">
+            <span class="text-sm text-gray-500">https://</span>
+            <input x-model="serviceModal.form.subdomain" class="input flex-1" placeholder="jellyfin">
+            <span class="text-sm text-gray-400 font-mono" x-text="'.' + (integrations.namecheap?.domain || '…')"></span>
+          </div>
+          <p class="text-xs text-gray-500 mt-1">Lowercase letters, digits and hyphens.</p>
+        </div>
+        <div>
+          <label class="label">Forward to (the app on your network)</label>
+          <div class="grid grid-cols-5 gap-2">
+            <select x-model="serviceModal.form.forward_scheme" class="input col-span-1">
+              <option value="http">http</option>
+              <option value="https">https</option>
+            </select>
+            <input x-model="serviceModal.form.forward_host" class="input col-span-3" placeholder="192.168.1.50">
+            <input x-model="serviceModal.form.forward_port" type="number" min="1" max="65535"
+                   class="input col-span-1" placeholder="8080">
+          </div>
+        </div>
+        <label class="flex items-center gap-2 text-sm text-gray-300">
+          <input type="checkbox" x-model="serviceModal.form.websockets" class="accent-blue-600">
+          Allow WebSocket upgrade <span class="text-xs text-gray-500">(needed by most modern web apps — leave on if unsure)</span>
+        </label>
+        <div x-show="serviceModal.error" x-text="serviceModal.error"
+             class="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded px-3 py-2"></div>
+        <p class="text-xs text-gray-500">
+          On save: a <span class="font-mono" x-text="(integrations.namecheap?.record_type || 'CNAME')"></span> record is created in Namecheap,
+          a proxy host in Nginx Proxy Manager, and a Let's Encrypt certificate is requested.
+          The certificate can take a minute — progress shows on the list.
+        </p>
+      </div>
+      <div class="px-6 py-4 border-t border-border flex justify-end gap-2">
+        <button @click="serviceModal.show = false" class="btn-secondary">Cancel</button>
+        <button @click="saveService()" :disabled="serviceModal.busy" class="btn-primary disabled:opacity-50">
+          <i x-show="serviceModal.busy" class="fa-solid fa-circle-notch fa-spin mr-1"></i>Create
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Integrations Modal (NPM + Namecheap settings) ─────────────────────── -->
+  <div x-show="integrationsModal.show" x-transition class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+    <div @click.stop class="bg-panel border border-border rounded-xl w-full max-w-xl shadow-2xl flex flex-col" style="max-height:90vh">
+      <div class="px-6 py-4 border-b border-border flex items-center justify-between">
+        <h2 class="font-semibold text-white"><i class="fa-solid fa-gear mr-1.5"></i>Service Integrations</h2>
+        <button @click="integrationsModal.show = false" class="text-gray-400 hover:text-white">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+      <div class="p-6 space-y-5 overflow-y-auto">
+
+        <!-- NPM -->
+        <div class="border border-border rounded-lg p-4 space-y-3">
+          <div class="flex items-center justify-between">
+            <div class="text-xs text-gray-400 uppercase tracking-wide font-semibold">Nginx Proxy Manager</div>
+            <button @click="testIntegration('npm')" :disabled="integrationsModal.busy" class="btn-secondary text-xs">
+              <i class="fa-solid fa-plug-circle-check mr-1"></i>Test
+            </button>
+          </div>
+          <div>
+            <label class="label">URL (the NPM admin UI, e.g. http://192.168.1.2:81)</label>
+            <input x-model="integrationsModal.npm.base_url" class="input w-full" placeholder="http://192.168.1.2:81">
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="label">Admin email</label>
+              <input x-model="integrationsModal.npm.email" class="input w-full" placeholder="admin@example.com">
+            </div>
+            <div>
+              <label class="label">Admin password</label>
+              <input x-model="integrationsModal.npm.password" type="password" class="input w-full"
+                     :placeholder="integrations.npm?.configured ? '(unchanged — leave blank to keep)' : ''">
+            </div>
+          </div>
+          <div>
+            <label class="label">Let's Encrypt email (expiry notices go here)</label>
+            <input x-model="integrationsModal.npm.le_email" class="input w-full" placeholder="you@example.com">
+          </div>
+          <div x-show="integrationsModal.npmTest" class="text-xs rounded px-3 py-2 border"
+               :class="integrationsModal.npmTest?.ok ? 'text-green-300 bg-green-500/10 border-green-600/40' : 'text-red-300 bg-red-500/10 border-red-600/40'"
+               x-text="integrationsModal.npmTest?.detail"></div>
+        </div>
+
+        <!-- Namecheap -->
+        <div class="border border-border rounded-lg p-4 space-y-3">
+          <div class="flex items-center justify-between">
+            <div class="text-xs text-gray-400 uppercase tracking-wide font-semibold">Namecheap DNS</div>
+            <button @click="testIntegration('namecheap')" :disabled="integrationsModal.busy" class="btn-secondary text-xs">
+              <i class="fa-solid fa-plug-circle-check mr-1"></i>Test
+            </button>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="label">API user</label>
+              <input x-model="integrationsModal.namecheap.api_user" class="input w-full" placeholder="myuser">
+            </div>
+            <div>
+              <label class="label">API key</label>
+              <input x-model="integrationsModal.namecheap.api_key" type="password" class="input w-full"
+                     :placeholder="integrations.namecheap?.configured ? '(unchanged — leave blank to keep)' : ''">
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="label">Account username</label>
+              <input x-model="integrationsModal.namecheap.username" class="input w-full" placeholder="usually same as API user">
+            </div>
+            <div>
+              <label class="label">Whitelisted client IP</label>
+              <input x-model="integrationsModal.namecheap.client_ip" class="input w-full" placeholder="your public IP">
+            </div>
+          </div>
+          <div>
+            <label class="label">Domain</label>
+            <input x-model="integrationsModal.namecheap.domain" class="input w-full" placeholder="example.com">
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="label">New-record type</label>
+              <select x-model="integrationsModal.namecheap.record_type" class="input w-full">
+                <option value="CNAME">CNAME (recommended)</option>
+                <option value="A">A</option>
+              </select>
+            </div>
+            <div>
+              <label class="label">Record target</label>
+              <input x-model="integrationsModal.namecheap.record_target" class="input w-full"
+                     :placeholder="integrationsModal.namecheap.record_type === 'A' ? 'public IP' : (integrationsModal.namecheap.domain || 'defaults to the domain root')">
+            </div>
+          </div>
+          <p class="text-xs text-gray-500">
+            CNAME to the domain root means every subdomain follows your public IP automatically.
+            Requests must come from the whitelisted IP (Profile → Tools → API Access in Namecheap).
+          </p>
+          <div x-show="integrationsModal.ncTest" class="text-xs rounded px-3 py-2 border"
+               :class="integrationsModal.ncTest?.ok ? 'text-green-300 bg-green-500/10 border-green-600/40' : 'text-red-300 bg-red-500/10 border-red-600/40'"
+               x-text="integrationsModal.ncTest?.detail"></div>
+        </div>
+      </div>
+      <div class="px-6 py-4 border-t border-border flex justify-end gap-2">
+        <button @click="integrationsModal.show = false" class="btn-secondary">Close</button>
+        <button @click="saveIntegrations()" :disabled="integrationsModal.busy" class="btn-primary disabled:opacity-50">
+          <i x-show="integrationsModal.busy" class="fa-solid fa-circle-notch fa-spin mr-1"></i>Save
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Confirm Modal ─────────────────────────────────────────────────────── -->
   <div x-show="confirmModal.show" x-transition class="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
     <div @click.stop class="bg-panel border border-border rounded-xl w-80 shadow-2xl p-6">
@@ -1936,6 +2200,16 @@
       appInfo:         { version: '', github_url: '', dockerhub_url: '' },
       form: {},
 
+      // ── Services (publish apps via NPM + Namecheap) ──────────────────────
+      // page controls what the main panel shows when no device is selected:
+      // 'dashboard' (default) or 'services'.
+      page: 'dashboard',
+      services: [],
+      integrations: { npm: {}, namecheap: {} },
+      serviceModal: { show: false, busy: false, error: '', form: {} },
+      integrationsModal: { show: false, busy: false, npm: {}, namecheap: {}, npmTest: null, ncTest: null },
+      _servicesPollTimer: null,
+
       // ── UPS graphs ────────────────────────────────────────────────────────
       upsRangeHours:   24,
       upsHistoryEmpty: false,
@@ -2158,6 +2432,192 @@
         });
       },
 
+      // ── Services (publish apps via NPM + Namecheap) ──────────────────────
+      async openServices() {
+        this.selectedId = null;
+        this.page = 'services';
+        await Promise.all([this.loadServices(), this.loadIntegrations()]);
+        this._watchProvisioning();
+      },
+
+      get integrationsReady() {
+        return !!(this.integrations.npm?.configured && this.integrations.namecheap?.configured);
+      },
+
+      async loadServices() {
+        try {
+          const r = await fetch('/api/services');
+          if (r.ok) this.services = await r.json();
+        } catch (e) { /* leave list as-is */ }
+      },
+
+      async loadIntegrations() {
+        try {
+          const r = await fetch('/api/integrations');
+          if (r.ok) this.integrations = await r.json();
+        } catch (e) { /* leave as-is */ }
+      },
+
+      serviceSteps(s) {
+        return [
+          { key: 'dns',   label: 'DNS record',      ...(s.steps?.dns   || {}) },
+          { key: 'proxy', label: 'Reverse proxy',   ...(s.steps?.proxy || {}) },
+          { key: 'ssl',   label: 'SSL certificate', ...(s.steps?.ssl   || {}) },
+        ];
+      },
+
+      stepChipClass(st) {
+        return {
+          ok:    'bg-green-500/15 text-green-300 border-green-600/40',
+          error: 'bg-red-500/15 text-red-300 border-red-600/40',
+        }[st] || 'bg-gray-600/20 text-gray-400 border-gray-600/40';
+      },
+
+      firstServiceError(s) {
+        for (const step of this.serviceSteps(s)) {
+          if (step.status === 'error' && step.detail) return `${step.label}: ${step.detail}`;
+        }
+        return '';
+      },
+
+      // Poll the list while anything is provisioning — belt-and-braces next
+      // to the service_updated WS push (which can be missed if the socket is
+      // reconnecting). Stops by itself once everything settles.
+      _watchProvisioning() {
+        if (this._servicesPollTimer) clearInterval(this._servicesPollTimer);
+        let ticks = 0;
+        this._servicesPollTimer = setInterval(async () => {
+          const busy = this.services.some(s => s.state === 'provisioning' || s.state === 'pending');
+          if (!busy || ++ticks > 120 || this.page !== 'services') {
+            clearInterval(this._servicesPollTimer);
+            this._servicesPollTimer = null;
+            return;
+          }
+          await this.loadServices();
+        }, 3000);
+      },
+
+      openServiceModal() {
+        this.serviceModal = {
+          show: true, busy: false, error: '',
+          form: { name: '', subdomain: '', forward_scheme: 'http', forward_host: '', forward_port: '', websockets: true },
+        };
+      },
+
+      async saveService() {
+        const f = this.serviceModal.form;
+        this.serviceModal.error = '';
+        const port = parseInt(f.forward_port, 10);
+        if (!f.subdomain) { this.serviceModal.error = 'Subdomain is required'; return; }
+        if (!f.forward_host) { this.serviceModal.error = 'Forward host is required'; return; }
+        if (isNaN(port) || port < 1 || port > 65535) { this.serviceModal.error = 'Forward port must be 1-65535'; return; }
+        this.serviceModal.busy = true;
+        try {
+          const r = await fetch('/api/services', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({
+              name: f.name || f.subdomain,
+              subdomain: f.subdomain.trim().toLowerCase(),
+              forward_scheme: f.forward_scheme,
+              forward_host: f.forward_host.trim(),
+              forward_port: port,
+              websockets: !!f.websockets,
+            }),
+          });
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) { this.serviceModal.error = data.detail || 'Failed to create service'; return; }
+          this.serviceModal.show = false;
+          this.showToast('Service created — provisioning DNS, proxy and certificate…');
+          await this.loadServices();
+          this._watchProvisioning();
+        } finally {
+          this.serviceModal.busy = false;
+        }
+      },
+
+      async retryService(s) {
+        const r = await fetch(`/api/services/${s.id}/provision`, { method: 'POST' });
+        if (r.ok) {
+          this.showToast('Retrying failed steps…');
+          await this.loadServices();
+          this._watchProvisioning();
+        } else {
+          const d = await r.json().catch(() => ({}));
+          this.showToast(d.detail || 'Retry failed', 'error');
+        }
+      },
+
+      deleteService(s) {
+        this.confirm(`Delete "${s.name}"? This removes the DNS record, proxy host and certificate for ${s.fqdn}.`, async () => {
+          const r = await fetch(`/api/services/${s.id}`, { method: 'DELETE' });
+          if (r.ok) {
+            await this.loadServices();
+            this.showToast('Service deleted');
+            return;
+          }
+          const d = await r.json().catch(() => ({}));
+          // Remote cleanup failed — offer a forced delete that drops the row
+          // and leaves whatever's left for manual cleanup.
+          this.confirm(`${d.detail || 'Cleanup failed'}\n\nDelete anyway? Leftovers in NPM/Namecheap will need manual cleanup.`, async () => {
+            const r2 = await fetch(`/api/services/${s.id}?force=true`, { method: 'DELETE' });
+            if (r2.ok) { await this.loadServices(); this.showToast('Service deleted (some remote cleanup skipped)', 'warning'); }
+            else { this.showToast('Failed to delete service', 'error'); }
+          });
+        });
+      },
+
+      async openIntegrationsModal() {
+        await this.loadIntegrations();
+        // Editable copies; secrets come back blanked and blank means "keep".
+        const strip = (cfg) => { const { configured, ...rest } = cfg || {}; return rest; };
+        this.integrationsModal = {
+          show: true, busy: false, npmTest: null, ncTest: null,
+          npm: { base_url: '', email: '', password: '', le_email: '', ...strip(this.integrations.npm) },
+          namecheap: { api_user: '', api_key: '', username: '', client_ip: '', domain: '',
+                       record_type: 'CNAME', record_target: '', ...strip(this.integrations.namecheap) },
+        };
+      },
+
+      async saveIntegrations() {
+        this.integrationsModal.busy = true;
+        try {
+          const save = (name, cfg) => fetch(`/api/integrations/${name}`, {
+            method:  'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify(cfg),
+          });
+          const [r1, r2] = await Promise.all([
+            save('npm', this.integrationsModal.npm),
+            save('namecheap', this.integrationsModal.namecheap),
+          ]);
+          if (r1.ok && r2.ok) {
+            this.showToast('Integration settings saved');
+            await this.loadIntegrations();
+          } else {
+            this.showToast('Failed to save integration settings', 'error');
+          }
+        } finally {
+          this.integrationsModal.busy = false;
+        }
+      },
+
+      async testIntegration(name) {
+        // Save first so the test runs against what's on screen.
+        await this.saveIntegrations();
+        const key = name === 'npm' ? 'npmTest' : 'ncTest';
+        this.integrationsModal[key] = { ok: true, detail: 'Testing…' };
+        try {
+          const r = await fetch(`/api/integrations/${name}/test`, { method: 'POST' });
+          const d = await r.json().catch(() => ({}));
+          this.integrationsModal[key] = r.ok
+            ? { ok: true, detail: d.detail || 'Connected' }
+            : { ok: false, detail: d.detail || `HTTP ${r.status}` };
+        } catch (e) {
+          this.integrationsModal[key] = { ok: false, detail: String(e) };
+        }
+      },
+
       // ── UPS shutdown plan ─────────────────────────────────────────────────
       async loadShutdownRules() {
         if (!this.selectedId) return;
@@ -2328,6 +2788,9 @@
                 // Extend the UPS graphs with the freshly-polled sample.
                 if (this.isUps && this.tab === 'graphs') await this.loadUpsHistory();
               }
+            } else if (data.event === 'service_updated') {
+              // Provisioning pipeline progress — refresh the Services page live.
+              if (this.page === 'services' && !this.selectedId) await this.loadServices();
             }
           } catch (e) {
             console.error("Error parsing websocket message", e);

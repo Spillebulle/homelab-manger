@@ -57,6 +57,18 @@ class NotificationConfigUpdate(BaseModel):
     notify_action: Optional[bool] = None
 
 
+class ServiceCreate(BaseModel):
+    """A published web service. The public domain comes from the Namecheap
+    integration config (snapshotted onto the row at creation), so the form
+    only supplies the subdomain + where to forward."""
+    name: str
+    subdomain: str
+    forward_scheme: str = "http"
+    forward_host: str
+    forward_port: int
+    websockets: bool = True
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str

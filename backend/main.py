@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 import secrets
 import ssl
 import time
@@ -20,15 +21,16 @@ from . import __version__ as APP_VERSION
 from .database import get_db, init_db
 from .models import (
     Device, DeviceCache, DeviceMetric, AuthUser, ApiKey, ShutdownRule,
-    Event, NotificationConfig,
+    Event, NotificationConfig, Integration, Service,
 )
 from .schemas import (
     DeviceCreate, DeviceUpdate, LoginRequest, ChangePasswordRequest,
     PreflightRequest, ApiKeyCreate, ShutdownRuleCreate, ShutdownRuleUpdate,
-    NotificationConfigUpdate,
+    NotificationConfigUpdate, ServiceCreate,
 )
 from . import events as events_mod
 from . import poller
+from . import services_manager
 from .adapters import get_adapter
 from .adapters import oui as oui_db
 from .auth import (
@@ -1197,6 +1199,185 @@ async def cimc_kvm_proxy(device_id: int, jar_name: str, t: str, request: Request
     forwarded = {k: v for k, v in r.headers.items() if k.lower() not in drop}
     forwarded.setdefault("Content-Type", "application/octet-stream")
     return Response(content=r.content, status_code=r.status_code, headers=forwarded)
+
+
+# ── Services (publish apps via Nginx Proxy Manager + Namecheap DNS) ─────────
+#
+# A "service" is an internal app published at https://<subdomain>.<domain>.
+# Creating one kicks off a background provisioning pipeline (DNS record →
+# NPM proxy host → Let's Encrypt cert) in services_manager; these endpoints
+# are CRUD + the integration settings the pipeline reads. Integration configs
+# (NPM admin creds, Namecheap API key) are stored Fernet-encrypted in the
+# `integrations` table and get the same blank-keeps-existing PUT treatment
+# as device credentials.
+
+_SUBDOMAIN_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def _serialize_integration(name: str, cfg: dict) -> dict:
+    out = dict(cfg)
+    for k in services_manager.INTEGRATION_SECRET_KEYS.get(name, set()):
+        if out.get(k):
+            out[k] = ""  # blank, same contract as device credentials
+    out["configured"] = services_manager.integration_configured(name, cfg)
+    return out
+
+
+@api.get("/integrations")
+def list_integrations(db: Session = Depends(get_db)):
+    return {
+        name: _serialize_integration(name, services_manager.get_integration_config(db, name))
+        for name in ("npm", "namecheap")
+    }
+
+
+@api.put("/integrations/{name}")
+def update_integration(name: str, body: dict, db: Session = Depends(get_db)):
+    if name not in ("npm", "namecheap"):
+        raise HTTPException(status_code=404, detail="Unknown integration")
+    row = db.query(Integration).filter(Integration.name == name).first()
+    existing = dict(row.config or {}) if row else {}
+    secret_keys = services_manager.INTEGRATION_SECRET_KEYS.get(name, set())
+    merged = dict(existing)
+    for k, v in (body or {}).items():
+        if k == "configured":
+            continue  # derived field, never stored
+        if k in secret_keys and (v is None or v == ""):
+            continue  # blank secret ⇒ keep existing
+        merged[k] = v.strip() if isinstance(v, str) else v
+    if row is None:
+        row = Integration(name=name, config=merged)
+        db.add(row)
+    else:
+        row.config = merged
+    db.commit()
+    return _serialize_integration(name, merged)
+
+
+@api.post("/integrations/{name}/test")
+async def test_integration(name: str, db: Session = Depends(get_db)):
+    """Live connectivity test using the *stored* config (call after Save)."""
+    if name not in ("npm", "namecheap"):
+        raise HTTPException(status_code=404, detail="Unknown integration")
+    cfg = services_manager.get_integration_config(db, name)
+    if not services_manager.integration_configured(name, cfg):
+        raise HTTPException(status_code=400, detail="Integration is not fully configured — save the settings first")
+    try:
+        if name == "npm":
+            return await services_manager.npm_client(cfg).test()
+        hosts = (await services_manager.nc_client(cfg).get_hosts(cfg["domain"]))["hosts"]
+        return {"ok": True, "detail": f"Connected — {len(hosts)} DNS record(s) on {cfg['domain']}"}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+def _serialize_service(s: Service) -> dict:
+    fqdn = f"{s.subdomain}.{s.domain}"
+    state = s.state
+    # A row can sit at state='provisioning' after a crash mid-pipeline; report
+    # it as error so the UI offers Retry instead of spinning forever.
+    if state == "provisioning" and not services_manager.service_provisioning(s.id):
+        state = "error"
+    return {
+        "id": s.id,
+        "name": s.name,
+        "subdomain": s.subdomain,
+        "domain": s.domain,
+        "fqdn": fqdn,
+        "url": f"https://{fqdn}",
+        "forward_scheme": s.forward_scheme,
+        "forward_host": s.forward_host,
+        "forward_port": s.forward_port,
+        "websockets": bool(s.websockets),
+        "state": state,
+        "steps": {
+            "dns":  {"status": s.dns_status,  "detail": s.dns_detail},
+            "proxy": {"status": s.npm_status,  "detail": s.npm_detail},
+            "ssl":  {"status": s.cert_status, "detail": s.cert_detail},
+        },
+        "npm_proxy_host_id": s.npm_proxy_host_id,
+        "created_at": _iso_z(s.created_at) if s.created_at else None,
+    }
+
+
+@api.get("/services")
+def list_services(db: Session = Depends(get_db)):
+    rows = db.query(Service).order_by(Service.name, Service.id).all()
+    return [_serialize_service(s) for s in rows]
+
+
+@api.post("/services", status_code=201)
+async def create_service(body: ServiceCreate, db: Session = Depends(get_db)):
+    npm_cfg = services_manager.get_integration_config(db, "npm")
+    nc_cfg = services_manager.get_integration_config(db, "namecheap")
+    if not services_manager.integration_configured("npm", npm_cfg):
+        raise HTTPException(status_code=400, detail="Configure the Nginx Proxy Manager integration first")
+    if not services_manager.integration_configured("namecheap", nc_cfg):
+        raise HTTPException(status_code=400, detail="Configure the Namecheap integration first")
+
+    subdomain = body.subdomain.strip().lower()
+    if not _SUBDOMAIN_RE.match(subdomain):
+        raise HTTPException(status_code=400,
+                            detail="Subdomain must be lowercase letters/digits/hyphens (no leading/trailing hyphen)")
+    scheme = body.forward_scheme.strip().lower()
+    if scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="Forward scheme must be http or https")
+    if not (1 <= body.forward_port <= 65535):
+        raise HTTPException(status_code=400, detail="Forward port must be 1-65535")
+    forward_host = body.forward_host.strip()
+    if not forward_host or any(c.isspace() for c in forward_host):
+        raise HTTPException(status_code=400, detail="Forward host is required")
+
+    domain = nc_cfg["domain"].strip().lower()
+    if db.query(Service).filter(Service.subdomain == subdomain,
+                                Service.domain == domain).first():
+        raise HTTPException(status_code=409, detail=f"A service for {subdomain}.{domain} already exists")
+
+    svc = Service(
+        name=body.name.strip() or subdomain, subdomain=subdomain, domain=domain,
+        forward_scheme=scheme, forward_host=forward_host,
+        forward_port=body.forward_port, websockets=body.websockets,
+    )
+    db.add(svc)
+    db.commit()
+    db.refresh(svc)
+    asyncio.create_task(services_manager.provision_service(
+        svc.id, on_update=manager.broadcast_json))
+    return _serialize_service(svc)
+
+
+@api.post("/services/{service_id}/provision")
+async def reprovision_service(service_id: int, db: Session = Depends(get_db)):
+    """Retry: re-runs the pipeline; steps already marked ok are skipped."""
+    svc = db.query(Service).filter(Service.id == service_id).first()
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+    if services_manager.service_provisioning(service_id):
+        raise HTTPException(status_code=409, detail="Provisioning is already running")
+    # Failed steps re-run because provision_service skips only status == ok.
+    asyncio.create_task(services_manager.provision_service(
+        svc.id, on_update=manager.broadcast_json))
+    return {"ok": True}
+
+
+@api.delete("/services/{service_id}")
+async def delete_service(service_id: int, force: bool = False,
+                         db: Session = Depends(get_db)):
+    """Deprovision (NPM proxy host + cert, then the exact DNS record we
+    created) and delete the row. If remote cleanup fails the row is kept and
+    a 502 explains what's left — `?force=true` deletes the row anyway,
+    leaving the remote leftovers for manual cleanup."""
+    svc = db.query(Service).filter(Service.id == service_id).first()
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+    if services_manager.service_provisioning(service_id):
+        raise HTTPException(status_code=409, detail="Wait for provisioning to finish first")
+    errors = await services_manager.deprovision_service(svc, db)
+    if errors and not force:
+        raise HTTPException(status_code=502, detail="Cleanup incomplete: " + "; ".join(errors))
+    db.delete(svc)
+    db.commit()
+    return {"ok": True, "cleanup_errors": errors}
 
 
 app.include_router(api)
