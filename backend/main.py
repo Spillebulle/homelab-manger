@@ -31,6 +31,7 @@ from .schemas import (
 from . import events as events_mod
 from . import poller
 from . import services_manager
+from .services_namecheap import NamecheapError
 from .adapters import get_adapter
 from .adapters import oui as oui_db
 from .auth import (
@@ -1293,6 +1294,8 @@ def _serialize_service(s: Service) -> dict:
         "domain": s.domain,
         "fqdn": fqdn,
         "url": f"https://{fqdn}",
+        "dns_record_type": s.dns_record_type,
+        "dns_record_target": s.dns_record_target,
         "forward_scheme": s.forward_scheme,
         "forward_host": s.forward_host,
         "forward_port": s.forward_port,
@@ -1330,6 +1333,36 @@ def _validate_subdomain(value: str) -> str:
     return sub
 
 
+def _validate_service_domain(domain: str | None, nc_cfg: dict) -> str:
+    """Resolve + validate the service's domain against the configured list
+    (the `domain` config key accepts a comma-separated list; first = default)."""
+    domains = services_manager.nc_domains(nc_cfg)
+    if not domains:
+        raise HTTPException(status_code=400, detail="No domain configured in the Namecheap integration")
+    resolved = (domain or "").strip().strip(".").lower() or domains[0]
+    if resolved not in domains:
+        raise HTTPException(status_code=400,
+                            detail=f"Domain {resolved!r} isn't in the configured list ({', '.join(domains)})")
+    return resolved
+
+
+def _validate_dns_override(rtype: str | None, target: str | None,
+                           nc_cfg: dict, domain: str) -> tuple[str | None, str | None]:
+    """Normalize a per-service DNS override. Blank values mean "use the
+    integration default" and are stored as NULL. Validates that an A record
+    (explicit or via the default plan) ends up with an IP target."""
+    rtype = (rtype or "").strip().upper() or None
+    target = (target or "").strip() or None
+    if rtype not in (None, "CNAME", "A"):
+        raise HTTPException(status_code=400, detail="DNS record type must be CNAME or A")
+    effective_type = rtype or (nc_cfg.get("record_type") or "CNAME").strip().upper()
+    effective_target = target or str(nc_cfg.get("record_target") or "").strip() or domain
+    if effective_type == "A" and not services_manager.looks_like_ip(effective_target):
+        raise HTTPException(status_code=400,
+                            detail=f"An A record needs an IP address target, got {effective_target!r}")
+    return rtype, target
+
+
 def _validate_forward(scheme: str | None, host: str | None, port: int | None) -> None:
     if scheme is not None and scheme not in ("http", "https"):
         raise HTTPException(status_code=400, detail="Forward scheme must be http or https")
@@ -1337,6 +1370,111 @@ def _validate_forward(scheme: str | None, host: str | None, port: int | None) ->
         raise HTTPException(status_code=400, detail="Forward port must be 1-65535")
     if host is not None and (not host.strip() or any(c.isspace() for c in host.strip())):
         raise HTTPException(status_code=400, detail="Forward host is required")
+
+
+# ── DNS manager (view/add/delete records on the configured domains) ─────────
+#
+# A thin UI over Namecheap's host records, scoped to what the Services page
+# needs: see what exists, add A/CNAME records that aren't tied to a service,
+# and delete records - with managed records (created by a service) flagged
+# and protected so the service stays the owner of its own record.
+
+_DNS_NAME_RE = re.compile(r"^(@|\*|[A-Za-z0-9*]([A-Za-z0-9.\-]{0,61}[A-Za-z0-9])?)$")
+
+
+@api.get("/dns/records")
+async def list_dns_records(domain: str | None = None, db: Session = Depends(get_db)):
+    cfg = services_manager.get_integration_config(db, "namecheap")
+    if not services_manager.integration_configured("namecheap", cfg):
+        raise HTTPException(status_code=400, detail="Namecheap integration is not configured")
+    resolved = _validate_service_domain(domain, cfg)
+    try:
+        data = await services_manager.nc_client(cfg).get_hosts(resolved)
+    except Exception as exc:
+        logger.warning("DNS record listing failed for %s: %s", resolved, exc)
+        raise HTTPException(status_code=502, detail=str(exc))
+    # Flag records owned by a managed service so the UI can protect them.
+    owners = {
+        (s.subdomain.lower(), (s.dns_record_type or "").upper()): s
+        for s in db.query(Service).filter(Service.domain == resolved,
+                                          Service.dns_record_type.isnot(None)).all()
+    }
+    records = []
+    for h in data["hosts"]:
+        owner = owners.get((h["name"].lower(), h["type"]))
+        records.append({**h, "service_id": owner.id if owner else None,
+                        "service_name": owner.name if owner else None})
+    return {"domain": resolved, "domains": services_manager.nc_domains(cfg),
+            "records": records}
+
+
+@api.post("/dns/records", status_code=201)
+async def create_dns_record(body: dict, db: Session = Depends(get_db)):
+    """Add a standalone A/CNAME record. Body: {domain?, name, type, address,
+    ttl?}. Idempotent on an identical existing record; conflicts (same name,
+    different target/type) are refused rather than overwritten."""
+    cfg = services_manager.get_integration_config(db, "namecheap")
+    if not services_manager.integration_configured("namecheap", cfg):
+        raise HTTPException(status_code=400, detail="Namecheap integration is not configured")
+    resolved = _validate_service_domain(body.get("domain"), cfg)
+    name = str(body.get("name") or "").strip().lower()
+    rtype = str(body.get("type") or "").strip().upper()
+    address = str(body.get("address") or "").strip()
+    if not _DNS_NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail="Invalid record name (use a label, '@' for root, or '*')")
+    if rtype not in ("A", "CNAME"):
+        raise HTTPException(status_code=400, detail="Record type must be A or CNAME")
+    if not address:
+        raise HTTPException(status_code=400, detail="Record value is required")
+    if rtype == "A" and not services_manager.looks_like_ip(address):
+        raise HTTPException(status_code=400, detail=f"An A record needs an IP address, got {address!r}")
+    try:
+        ttl = max(60, int(body.get("ttl") or 1799))
+    except (TypeError, ValueError):
+        ttl = 1799
+    try:
+        outcome = await services_manager.nc_client(cfg).ensure_record(
+            resolved, name, rtype, address, ttl)
+    except NamecheapError as exc:
+        code = 409 if "already exists" in str(exc) else 502
+        raise HTTPException(status_code=code, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return {"ok": True, "outcome": outcome,
+            "record": {"domain": resolved, "name": name, "type": rtype,
+                       "address": address, "ttl": ttl}}
+
+
+@api.delete("/dns/records")
+async def delete_dns_record(name: str, type: str, address: str,
+                            domain: str | None = None,
+                            db: Session = Depends(get_db)):
+    """Delete one record, matched exactly by (name, type, address) - the
+    address is mandatory so a typo can't take out a different record.
+    Records owned by a managed service are refused; delete or edit the
+    service instead so its state stays truthful."""
+    cfg = services_manager.get_integration_config(db, "namecheap")
+    if not services_manager.integration_configured("namecheap", cfg):
+        raise HTTPException(status_code=400, detail="Namecheap integration is not configured")
+    resolved = _validate_service_domain(domain, cfg)
+    rtype = type.strip().upper()
+    owner = db.query(Service).filter(
+        Service.domain == resolved,
+        Service.subdomain == name.strip().lower(),
+        Service.dns_record_type == rtype).first()
+    if owner:
+        raise HTTPException(
+            status_code=409,
+            detail=f"That record belongs to the service '{owner.name}' - "
+                   "edit or delete the service instead")
+    try:
+        removed = await services_manager.nc_client(cfg).remove_record(
+            resolved, name.strip(), rtype, address.strip())
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    if not removed:
+        raise HTTPException(status_code=404, detail="No record matched exactly - nothing was changed")
+    return {"ok": True}
 
 
 @api.get("/services/containers")
@@ -1436,13 +1574,16 @@ async def create_service(body: ServiceCreate, db: Session = Depends(get_db)):
     scheme = body.forward_scheme.strip().lower()
     _validate_forward(scheme, body.forward_host, body.forward_port)
 
-    domain = nc_cfg["domain"].strip().lower()
+    domain = _validate_service_domain(body.domain, nc_cfg)
+    dns_type, dns_target = _validate_dns_override(
+        body.dns_record_type, body.dns_record_target, nc_cfg, domain)
     if db.query(Service).filter(Service.subdomain == subdomain,
                                 Service.domain == domain).first():
         raise HTTPException(status_code=409, detail=f"A service for {subdomain}.{domain} already exists")
 
     svc = Service(
         name=body.name.strip() or subdomain, subdomain=subdomain, domain=domain,
+        dns_record_type=dns_type, dns_record_target=dns_target,
         forward_scheme=scheme, forward_host=body.forward_host.strip(),
         forward_port=body.forward_port, websockets=body.websockets,
         block_exploits=body.block_exploits, caching_enabled=body.caching_enabled,
@@ -1463,12 +1604,13 @@ async def create_service(body: ServiceCreate, db: Session = Depends(get_db)):
 async def update_service(service_id: int, body: ServiceUpdate,
                          db: Session = Depends(get_db)):
     """Edit a service. Forward/toggle changes are pushed to NPM by the
-    pipeline's settings-sync step. A subdomain change is a rename: the old
-    DNS record (if we created it) and our old certificate are removed here,
-    the NPM host's domain list is rewritten in place (preserving any extra
-    domains on imported hosts), and DNS + cert re-provision for the new name.
-    Remote-cleanup hiccups during a rename degrade to `warnings` on the
-    response - the re-provision itself still proceeds."""
+    pipeline's settings-sync step. A subdomain or domain change is a rename:
+    the old DNS record (if we created it) and our old certificate are removed
+    here, the NPM host's domain list is rewritten in place (preserving any
+    extra domains on imported hosts), and DNS + cert re-provision for the new
+    name. A DNS type/target change replaces just the record. Remote-cleanup
+    hiccups degrade to `warnings` on the response - the re-provision itself
+    still proceeds."""
     svc = db.query(Service).filter(Service.id == service_id).first()
     if not svc:
         raise HTTPException(status_code=404, detail="Service not found")
@@ -1476,8 +1618,17 @@ async def update_service(service_id: int, body: ServiceUpdate,
         raise HTTPException(status_code=409, detail="Wait for provisioning to finish first")
 
     data = body.model_dump(exclude_unset=True)
+    nc_cfg = services_manager.get_integration_config(db, "namecheap")
     if "subdomain" in data:
         data["subdomain"] = _validate_subdomain(data["subdomain"])
+    if "domain" in data:
+        data["domain"] = _validate_service_domain(data["domain"], nc_cfg)
+    if "dns_record_type" in data or "dns_record_target" in data:
+        dns_type, dns_target = _validate_dns_override(
+            data.get("dns_record_type", svc.dns_record_type),
+            data.get("dns_record_target", svc.dns_record_target),
+            nc_cfg, data.get("domain", svc.domain))
+        data["dns_record_type"], data["dns_record_target"] = dns_type, dns_target
     if "forward_scheme" in data:
         data["forward_scheme"] = (data["forward_scheme"] or "").strip().lower()
     _validate_forward(data.get("forward_scheme"), data.get("forward_host"),
@@ -1491,14 +1642,16 @@ async def update_service(service_id: int, body: ServiceUpdate,
 
     warnings: list[str] = []
     new_sub = data.get("subdomain", svc.subdomain)
-    if new_sub != svc.subdomain:
+    new_domain = data.get("domain", svc.domain)
+    renamed = new_sub != svc.subdomain or new_domain != svc.domain
+    if renamed:
         if db.query(Service).filter(Service.subdomain == new_sub,
-                                    Service.domain == svc.domain,
+                                    Service.domain == new_domain,
                                     Service.id != svc.id).first():
             raise HTTPException(status_code=409,
-                                detail=f"A service for {new_sub}.{svc.domain} already exists")
+                                detail=f"A service for {new_sub}.{new_domain} already exists")
         old_fqdn = f"{svc.subdomain}.{svc.domain}"
-        new_fqdn = f"{new_sub}.{svc.domain}"
+        new_fqdn = f"{new_sub}.{new_domain}"
 
         # Rewrite the NPM host's domain list in place and detach our cert
         # (it's bound to the old name; LE certs can't be renamed).
@@ -1528,7 +1681,6 @@ async def update_service(service_id: int, body: ServiceUpdate,
                 warnings.append(f"NPM rename: {exc}")
 
         # Remove the old DNS record - only the exact one we created.
-        nc_cfg = services_manager.get_integration_config(db, "namecheap")
         if svc.dns_record_type and \
                 services_manager.integration_configured("namecheap", nc_cfg):
             try:
@@ -1536,9 +1688,39 @@ async def update_service(service_id: int, body: ServiceUpdate,
                     svc.domain, svc.subdomain, svc.dns_record_type, svc.dns_record_target)
             except Exception as exc:
                 warnings.append(f"Old DNS record: {exc}")
-        svc.dns_record_type = svc.dns_record_target = None
+        if "dns_record_type" not in data:
+            svc.dns_record_type = None
+        if "dns_record_target" not in data:
+            svc.dns_record_target = None
         svc.dns_status, svc.dns_detail = "pending", None
         svc.cert_status, svc.cert_detail = "pending", None
+    elif "dns_record_type" in data or "dns_record_target" in data:
+        # Same name, different record plan: replace the record if the
+        # effective (type, target) actually changes. The effective values
+        # resolve blanks through the integration defaults, so flipping the
+        # form back to "Default" doesn't churn an identical record.
+        want_type = data.get("dns_record_type") or \
+            (nc_cfg.get("record_type") or "CNAME").strip().upper()
+        want_target = (data.get("dns_record_target")
+                       or str(nc_cfg.get("record_target") or "").strip()
+                       or svc.domain)
+        have_type = (svc.dns_record_type or "").upper()
+        have_target = (svc.dns_record_target or "").rstrip(".")
+        if svc.dns_status == "ok" and \
+                (want_type != have_type or want_target.rstrip(".") != have_target):
+            if svc.dns_record_type and \
+                    services_manager.integration_configured("namecheap", nc_cfg):
+                try:
+                    await services_manager.nc_client(nc_cfg).remove_record(
+                        svc.domain, svc.subdomain, svc.dns_record_type, svc.dns_record_target)
+                except Exception as exc:
+                    warnings.append(f"Old DNS record: {exc}")
+            svc.dns_status, svc.dns_detail = "pending", None
+        elif svc.dns_status == "ok":
+            # No effective change - keep the provisioned snapshot instead of
+            # overwriting it with NULLs ("Default" selection).
+            data.pop("dns_record_type", None)
+            data.pop("dns_record_target", None)
 
     for field, value in data.items():
         setattr(svc, field, value)

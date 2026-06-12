@@ -58,12 +58,16 @@ class NotificationConfigUpdate(BaseModel):
 
 
 class ServiceCreate(BaseModel):
-    """A published web service. The public domain comes from the Namecheap
-    integration config (snapshotted onto the row at creation), so the form
-    only supplies the subdomain + where to forward. The toggle block maps
-    1:1 to NPM proxy-host settings."""
+    """A published web service. `domain` picks one of the configured
+    Namecheap domains (default: the first); `dns_record_type`/`_target`
+    optionally override the integration's default record plan (CNAME to the
+    domain root) for this service. The toggle block maps 1:1 to NPM
+    proxy-host settings."""
     name: str
     subdomain: str
+    domain: Optional[str] = None
+    dns_record_type: Optional[str] = None    # CNAME | A | None (= default)
+    dns_record_target: Optional[str] = None  # None = default (domain root / config)
     forward_scheme: str = "http"
     forward_host: str
     forward_port: int
@@ -79,11 +83,15 @@ class ServiceCreate(BaseModel):
 
 
 class ServiceUpdate(BaseModel):
-    """Partial edit. A subdomain change triggers DNS + certificate
-    re-provisioning in the PUT handler; everything else is synced to NPM by
-    the pipeline's settings-sync step."""
+    """Partial edit. A subdomain or domain change triggers DNS + certificate
+    re-provisioning in the PUT handler, and a DNS type/target change replaces
+    the record; everything else is synced to NPM by the pipeline's
+    settings-sync step."""
     name: Optional[str] = None
     subdomain: Optional[str] = None
+    domain: Optional[str] = None
+    dns_record_type: Optional[str] = None
+    dns_record_target: Optional[str] = None
     forward_scheme: Optional[str] = None
     forward_host: Optional[str] = None
     forward_port: Optional[int] = None

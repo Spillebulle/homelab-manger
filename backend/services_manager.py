@@ -192,14 +192,31 @@ async def find_portainer_match(db: Session, forward_host: str,
     return (c["name"], c["endpoint_id"]) if c else (None, None)
 
 
-def dns_record_plan(cfg: dict) -> tuple[str, str, int]:
-    """(record_type, target, ttl) for new DNS records. Default: CNAME to the
-    domain root - the root already resolves to the public IP, so every new
-    subdomain follows it automatically (including if the IP ever changes).
+def nc_domains(cfg: dict) -> list[str]:
+    """Configured Namecheap domains. The `domain` config key accepts a
+    comma/space separated list; the first entry is the default for new
+    services. Single-domain configs keep working unchanged."""
+    out: list[str] = []
+    for part in str(cfg.get("domain") or "").replace(",", " ").split():
+        d = part.strip().strip(".").lower()
+        if d and d not in out:
+            out.append(d)
+    return out
+
+
+def dns_record_plan(cfg: dict, svc: Service) -> tuple[str, str, int]:
+    """(record_type, target, ttl) for the service's DNS record. Per-service
+    overrides (`svc.dns_record_type` / `svc.dns_record_target`) win; then the
+    integration-level defaults; then CNAME to the service's own domain root -
+    the root already resolves to the public IP, so every new subdomain
+    follows it automatically (including if the IP ever changes).
     Default TTL is 1799, which Namecheap's UI displays as "Automatic" (the
     API has no real automatic value; 1799 is what the UI writes for it)."""
-    rtype = (cfg.get("record_type") or "CNAME").strip().upper()
-    target = str(cfg.get("record_target") or "").strip() or cfg["domain"]
+    rtype = ((svc.dns_record_type or "").strip()
+             or (cfg.get("record_type") or "CNAME").strip()).upper()
+    target = ((svc.dns_record_target or "").strip()
+              or str(cfg.get("record_target") or "").strip()
+              or svc.domain)
     try:
         ttl = max(60, int(cfg.get("ttl") or 1799))
     except (TypeError, ValueError):
@@ -243,7 +260,7 @@ async def provision_service(service_id: int, on_update=None) -> None:
                 svc.dns_status, svc.dns_detail = "error", "Namecheap integration is not configured"
             else:
                 try:
-                    rtype, target, ttl = dns_record_plan(nc_cfg)
+                    rtype, target, ttl = dns_record_plan(nc_cfg, svc)
                     outcome = await nc_client(nc_cfg).ensure_record(
                         svc.domain, svc.subdomain, rtype, target, ttl)
                     svc.dns_record_type, svc.dns_record_target = rtype, target

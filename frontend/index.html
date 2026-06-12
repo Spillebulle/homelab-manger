@@ -186,7 +186,7 @@
             </div>
           </div>
           <p class="text-gray-400 text-sm mb-6">
-            Publish an internal app at <span class="font-mono text-gray-300" x-text="'https://name.' + (integrations.namecheap?.domain || 'your-domain')"></span> -
+            Publish an internal app at <span class="font-mono text-gray-300" x-text="'https://name.' + (ncDomains[0] || 'your-domain') + (ncDomains.length > 1 ? ' (+' + (ncDomains.length - 1) + ' more)' : '')"></span> -
             the DNS record (Namecheap), reverse proxy and Let's Encrypt certificate (Nginx Proxy Manager) are set up automatically.
           </p>
 
@@ -323,6 +323,83 @@
                   </button>
                 </div>
               </template>
+            </div>
+          </div>
+
+          <!-- DNS manager: view/add/delete records on the configured domains -->
+          <div x-show="integrations.namecheap?.configured" class="mt-8">
+            <div class="flex items-center gap-2 mb-3 flex-wrap">
+              <button @click="toggleDnsSection()" class="text-sm font-semibold text-gray-300 uppercase tracking-wide flex items-center gap-2 hover:text-white">
+                <i class="fa-solid" :class="dns.open ? 'fa-chevron-down' : 'fa-chevron-right'"></i>
+                DNS records (Namecheap)
+              </button>
+              <template x-if="dns.open && dns.domains.length > 1">
+                <select x-model="dns.domain" @change="loadDnsRecords()" class="input py-1 text-xs font-mono">
+                  <template x-for="d in dns.domains" :key="d">
+                    <option :value="d" x-text="d"></option>
+                  </template>
+                </select>
+              </template>
+              <button x-show="dns.open" @click="loadDnsRecords()" title="Refresh"
+                      class="text-gray-500 hover:text-gray-200 px-1.5 py-0.5 rounded hover:bg-card text-xs">
+                <i class="fa-solid fa-arrows-rotate" :class="dns.busy && 'fa-spin'"></i>
+              </button>
+            </div>
+            <div x-show="dns.open">
+              <div x-show="dns.error" class="text-xs text-red-300 bg-red-500/10 border border-red-500/30 rounded px-3 py-2 mb-3"
+                   x-text="dns.error"></div>
+
+              <!-- Add record -->
+              <div class="flex items-end gap-2 mb-3 flex-wrap">
+                <div>
+                  <label class="label">Type</label>
+                  <select x-model="dns.form.type" class="input py-1.5">
+                    <option value="A">A</option>
+                    <option value="CNAME">CNAME</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="label">Host</label>
+                  <input x-model="dns.form.name" class="input py-1.5 w-36" placeholder="sub, @ or *">
+                </div>
+                <div class="flex-1 min-w-[12rem]">
+                  <label class="label" x-text="dns.form.type === 'A' ? 'IP address' : 'Target hostname'"></label>
+                  <input x-model="dns.form.address" class="input py-1.5 w-full"
+                         :placeholder="dns.form.type === 'A' ? '192.168.1.10 or public IP' : 'example.com'">
+                </div>
+                <button @click="addDnsRecord()" :disabled="dns.busy" class="btn-primary py-1.5 disabled:opacity-50">
+                  <i class="fa-solid fa-plus mr-1"></i>Add
+                </button>
+              </div>
+
+              <!-- Records table -->
+              <div class="border border-border rounded-lg divide-y divide-border">
+                <template x-for="r in dns.records" :key="r.type + '|' + r.name + '|' + r.address">
+                  <div class="flex items-center gap-3 px-3 py-2 text-xs">
+                    <span class="w-14 font-mono text-gray-400" x-text="r.type"></span>
+                    <span class="font-mono text-gray-200 w-40 truncate" x-text="r.name" :title="r.name"></span>
+                    <span class="font-mono text-gray-400 flex-1 truncate" x-text="'→ ' + r.address" :title="r.address"></span>
+                    <span class="text-gray-600 w-16 text-right" x-text="'TTL ' + r.ttl"></span>
+                    <template x-if="r.service_id">
+                      <span class="text-[10px] px-1.5 py-0.5 rounded border border-blue-600/40 bg-blue-500/10 text-blue-300"
+                            :title="'Created by the service ' + r.service_name + ' - edit or delete the service instead'">
+                        <i class="fa-solid fa-link mr-1"></i><span x-text="r.service_name"></span>
+                      </span>
+                    </template>
+                    <template x-if="!r.service_id && ['A', 'CNAME'].includes(r.type)">
+                      <button @click="deleteDnsRecord(r)" title="Delete this record"
+                              class="text-red-400 hover:text-red-300 px-1.5 py-0.5 rounded hover:bg-panel">
+                        <i class="fa-solid fa-trash"></i>
+                      </button>
+                    </template>
+                    <!-- non-A/CNAME records (MX, TXT, ...) are view-only here -->
+                    <span x-show="!r.service_id && !['A', 'CNAME'].includes(r.type)" class="w-6"></span>
+                  </div>
+                </template>
+                <div x-show="!dns.records.length && !dns.busy" class="px-3 py-4 text-xs text-gray-500 text-center">
+                  No records found.
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -1899,20 +1976,54 @@
             <input x-model="serviceModal.form.subdomain" class="input flex-1" placeholder="jellyfin"
                    :disabled="serviceModal.mode === 'import'"
                    :class="serviceModal.mode === 'import' && 'opacity-60'">
-            <span class="text-sm text-gray-400 font-mono"
-                  x-text="'.' + (serviceModal.mode === 'import' ? serviceModal.importDomain
-                                 : (serviceModal.editing?.domain || integrations.namecheap?.domain || '…'))"></span>
+            <!-- Domain: static suffix for imports and single-domain configs,
+                 a picker when several domains are configured -->
+            <template x-if="serviceModal.mode === 'import' || ncDomains.length < 2">
+              <span class="text-sm text-gray-400 font-mono"
+                    x-text="'.' + (serviceModal.mode === 'import' ? serviceModal.importDomain
+                                   : (serviceModal.form.domain || ncDomains[0] || '…'))"></span>
+            </template>
+            <template x-if="serviceModal.mode !== 'import' && ncDomains.length > 1">
+              <select x-model="serviceModal.form.domain" class="input font-mono">
+                <template x-for="d in ncDomains" :key="d">
+                  <option :value="d" x-text="'.' + d"></option>
+                </template>
+              </select>
+            </template>
           </div>
           <p class="text-xs text-gray-500 mt-1" x-show="serviceModal.mode === 'add'">Lowercase letters, digits and hyphens.</p>
           <p class="text-xs text-gray-500 mt-1" x-show="serviceModal.mode === 'import'">
             The address comes from the existing proxy host - import first, then edit to rename.
           </p>
           <p class="text-xs text-amber-300/90 mt-1"
-             x-show="serviceModal.mode === 'edit' && serviceModal.form.subdomain !== serviceModal.editing?.subdomain">
+             x-show="serviceModal.mode === 'edit' && (serviceModal.form.subdomain !== serviceModal.editing?.subdomain
+                     || serviceModal.form.domain !== serviceModal.editing?.domain)">
             <i class="fa-solid fa-triangle-exclamation mr-1"></i>Changing the address moves the service:
             the old DNS record is removed and a new record + certificate are provisioned.
           </p>
         </div>
+
+        <!-- Per-service DNS record (not applicable to imports - their DNS is pre-existing) -->
+        <template x-if="serviceModal.mode !== 'import'">
+          <div>
+            <label class="label">DNS record</label>
+            <div class="grid grid-cols-3 gap-2">
+              <select x-model="serviceModal.form.dns_record_type" class="input col-span-1">
+                <option value="" x-text="'Default (' + (integrations.namecheap?.record_type || 'CNAME') + ')'"></option>
+                <option value="CNAME">CNAME</option>
+                <option value="A">A</option>
+              </select>
+              <input x-model="serviceModal.form.dns_record_target" class="input col-span-2"
+                     :placeholder="(serviceModal.form.dns_record_type || integrations.namecheap?.record_type || 'CNAME') === 'A'
+                                   ? 'IP address'
+                                   : 'default: ' + (integrations.namecheap?.record_target || serviceModal.form.domain || ncDomains[0] || 'domain root')">
+            </div>
+            <p class="text-xs text-gray-500 mt-1">
+              Leave on Default unless this service needs its own record type or target
+              (e.g. an A record pointing at a different IP).
+            </p>
+          </div>
+        </template>
         <div>
           <label class="label">Forward to (the app on your network)</label>
           <div class="grid grid-cols-5 gap-2">
@@ -2067,8 +2178,8 @@
             </div>
           </div>
           <div>
-            <label class="label">Domain</label>
-            <input x-model="integrationsModal.namecheap.domain" class="input w-full" placeholder="example.com">
+            <label class="label">Domain(s) - comma-separated, first is the default</label>
+            <input x-model="integrationsModal.namecheap.domain" class="input w-full" placeholder="example.com, other.net">
           </div>
           <div class="grid grid-cols-2 gap-3">
             <div>
@@ -2421,6 +2532,9 @@
       npmHostsError: '',
       containers: [],        // live Portainer container list (dropdown + state dots)
       containersError: '',
+      // DNS manager section (collapsed by default; loads on open)
+      dns: { open: false, busy: false, error: '', domain: '', domains: [],
+             records: [], form: { type: 'A', name: '', address: '' } },
       integrations: { npm: {}, namecheap: {}, portainer: {} },
       serviceModal: { show: false, busy: false, error: '', editing: null, form: {} },
       integrationsModal: { show: false, busy: false, npm: {}, namecheap: {}, portainer: {},
@@ -2777,6 +2891,73 @@
         return !!(this.integrations.npm?.configured && this.integrations.namecheap?.configured);
       },
 
+      // Configured Namecheap domains - the config's `domain` field accepts a
+      // comma/space separated list; first entry is the default. Mirrors
+      // nc_domains() on the backend.
+      get ncDomains() {
+        return String(this.integrations.namecheap?.domain || '')
+          .replace(/,/g, ' ').split(/\s+/)
+          .map(d => d.replace(/^\.+|\.+$/g, '').toLowerCase())
+          .filter((d, i, a) => d && a.indexOf(d) === i);
+      },
+
+      // ── DNS manager ───────────────────────────────────────────────────────
+      async toggleDnsSection() {
+        this.dns.open = !this.dns.open;
+        if (this.dns.open && !this.dns.records.length) await this.loadDnsRecords();
+      },
+
+      async loadDnsRecords() {
+        this.dns.busy = true;
+        this.dns.error = '';
+        try {
+          const params = this.dns.domain ? `?domain=${encodeURIComponent(this.dns.domain)}` : '';
+          const r = await fetch('/api/dns/records' + params);
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) { this.dns.error = d.detail || `HTTP ${r.status}`; return; }
+          this.dns.domain = d.domain;
+          this.dns.domains = d.domains || [];
+          this.dns.records = d.records || [];
+        } catch (e) {
+          this.dns.error = String(e);
+        } finally {
+          this.dns.busy = false;
+        }
+      },
+
+      async addDnsRecord() {
+        const f = this.dns.form;
+        if (!f.name || !f.address) { this.showToast('Host and value are required', 'error'); return; }
+        this.dns.busy = true;
+        try {
+          const r = await fetch('/api/dns/records', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ domain: this.dns.domain, name: f.name.trim(),
+                                      type: f.type, address: f.address.trim() }),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) { this.showToast(d.detail || 'Failed to add record', 'error'); return; }
+          this.showToast(d.outcome === 'exists' ? 'Record already existed' : 'Record added');
+          this.dns.form = { type: f.type, name: '', address: '' };
+          await this.loadDnsRecords();
+        } finally {
+          this.dns.busy = false;
+        }
+      },
+
+      deleteDnsRecord(rec) {
+        this.confirm(`Delete the ${rec.type} record "${rec.name}" → ${rec.address}?`, async () => {
+          const params = new URLSearchParams({
+            domain: this.dns.domain, name: rec.name, type: rec.type, address: rec.address,
+          });
+          const r = await fetch('/api/dns/records?' + params.toString(), { method: 'DELETE' });
+          const d = await r.json().catch(() => ({}));
+          if (r.ok) { this.showToast('Record deleted'); await this.loadDnsRecords(); }
+          else { this.showToast(d.detail || 'Failed to delete record', 'error'); }
+        });
+      },
+
       async loadServices() {
         try {
           const r = await fetch('/api/services');
@@ -2837,6 +3018,9 @@
           form: svc ? {
             name: svc.name,
             subdomain: svc.subdomain,
+            domain: svc.domain,
+            dns_record_type: svc.dns_record_type || '',
+            dns_record_target: svc.dns_record_target || '',
             forward_scheme: svc.forward_scheme,
             forward_host: svc.forward_host,
             forward_port: svc.forward_port,
@@ -2852,7 +3036,9 @@
             _container_key: svc.portainer_container
               ? `${svc.portainer_endpoint_id}|${svc.portainer_container}` : '',
           } : {
-            name: '', subdomain: '', forward_scheme: 'http', forward_host: '', forward_port: '',
+            name: '', subdomain: '', domain: this.ncDomains[0] || '',
+            dns_record_type: '', dns_record_target: '',
+            forward_scheme: 'http', forward_host: '', forward_port: '',
             websockets: true, block_exploits: true, caching_enabled: false,
             ssl_forced: true, http2_support: true, hsts_enabled: false, hsts_subdomains: false,
             portainer_container: null, portainer_endpoint_id: null, _container_key: '',
@@ -2944,14 +3130,13 @@
           url = '/api/services/npm-import';
           method = 'POST';
           payload.npm_proxy_host_id = this.serviceModal.npmHost.id;
-        } else if (mode === 'edit') {
-          url = `/api/services/${editing.id}`;
-          method = 'PUT';
-          payload.subdomain = f.subdomain.trim().toLowerCase();
         } else {
-          url = '/api/services';
-          method = 'POST';
+          url = mode === 'edit' ? `/api/services/${editing.id}` : '/api/services';
+          method = mode === 'edit' ? 'PUT' : 'POST';
           payload.subdomain = f.subdomain.trim().toLowerCase();
+          payload.domain = f.domain || null;
+          payload.dns_record_type = f.dns_record_type || null;
+          payload.dns_record_target = (f.dns_record_target || '').trim() || null;
         }
         this.serviceModal.busy = true;
         try {
