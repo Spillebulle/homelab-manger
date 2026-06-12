@@ -26,7 +26,7 @@ from .models import (
 from .schemas import (
     DeviceCreate, DeviceUpdate, LoginRequest, ChangePasswordRequest,
     PreflightRequest, ApiKeyCreate, ShutdownRuleCreate, ShutdownRuleUpdate,
-    NotificationConfigUpdate, ServiceCreate,
+    NotificationConfigUpdate, ServiceCreate, ServiceUpdate,
 )
 from . import events as events_mod
 from . import poller
@@ -1223,17 +1223,20 @@ def _serialize_integration(name: str, cfg: dict) -> dict:
     return out
 
 
+_INTEGRATION_NAMES = ("npm", "namecheap", "portainer")
+
+
 @api.get("/integrations")
 def list_integrations(db: Session = Depends(get_db)):
     return {
         name: _serialize_integration(name, services_manager.get_integration_config(db, name))
-        for name in ("npm", "namecheap")
+        for name in _INTEGRATION_NAMES
     }
 
 
 @api.put("/integrations/{name}")
 def update_integration(name: str, body: dict, db: Session = Depends(get_db)):
-    if name not in ("npm", "namecheap"):
+    if name not in _INTEGRATION_NAMES:
         raise HTTPException(status_code=404, detail="Unknown integration")
     row = db.query(Integration).filter(Integration.name == name).first()
     existing = dict(row.config or {}) if row else {}
@@ -1257,7 +1260,7 @@ def update_integration(name: str, body: dict, db: Session = Depends(get_db)):
 @api.post("/integrations/{name}/test")
 async def test_integration(name: str, db: Session = Depends(get_db)):
     """Live connectivity test using the *stored* config (call after Save)."""
-    if name not in ("npm", "namecheap"):
+    if name not in _INTEGRATION_NAMES:
         raise HTTPException(status_code=404, detail="Unknown integration")
     cfg = services_manager.get_integration_config(db, name)
     if not services_manager.integration_configured(name, cfg):
@@ -1265,6 +1268,8 @@ async def test_integration(name: str, db: Session = Depends(get_db)):
     try:
         if name == "npm":
             return await services_manager.npm_client(cfg).test()
+        if name == "portainer":
+            return await services_manager.portainer_client(cfg).test()
         hosts = (await services_manager.nc_client(cfg).get_hosts(cfg["domain"]))["hosts"]
         return {"ok": True, "detail": f"Connected — {len(hosts)} DNS record(s) on {cfg['domain']}"}
     except Exception as exc:
@@ -1292,6 +1297,14 @@ def _serialize_service(s: Service) -> dict:
         "forward_host": s.forward_host,
         "forward_port": s.forward_port,
         "websockets": bool(s.websockets),
+        "block_exploits": bool(s.block_exploits),
+        "caching_enabled": bool(s.caching_enabled),
+        "ssl_forced": bool(s.ssl_forced),
+        "http2_support": bool(s.http2_support),
+        "hsts_enabled": bool(s.hsts_enabled),
+        "hsts_subdomains": bool(s.hsts_subdomains),
+        "portainer_container": s.portainer_container,
+        "portainer_endpoint_id": s.portainer_endpoint_id,
         "state": state,
         "steps": {
             "dns":  {"status": s.dns_status,  "detail": s.dns_detail},
@@ -1307,6 +1320,37 @@ def _serialize_service(s: Service) -> dict:
 def list_services(db: Session = Depends(get_db)):
     rows = db.query(Service).order_by(Service.name, Service.id).all()
     return [_serialize_service(s) for s in rows]
+
+
+def _validate_subdomain(value: str) -> str:
+    sub = (value or "").strip().lower()
+    if not _SUBDOMAIN_RE.match(sub):
+        raise HTTPException(status_code=400,
+                            detail="Subdomain must be lowercase letters/digits/hyphens (no leading/trailing hyphen)")
+    return sub
+
+
+def _validate_forward(scheme: str | None, host: str | None, port: int | None) -> None:
+    if scheme is not None and scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="Forward scheme must be http or https")
+    if port is not None and not (1 <= port <= 65535):
+        raise HTTPException(status_code=400, detail="Forward port must be 1-65535")
+    if host is not None and (not host.strip() or any(c.isspace() for c in host.strip())):
+        raise HTTPException(status_code=400, detail="Forward host is required")
+
+
+@api.get("/services/containers")
+async def list_service_containers(db: Session = Depends(get_db)):
+    """Portainer containers with suggested forward targets — feeds the
+    add/edit modal's container dropdown and the container-state dots on the
+    service list."""
+    try:
+        return await services_manager.list_portainer_containers(db)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.warning("Portainer container listing failed: %s", exc)
+        raise HTTPException(status_code=502, detail=str(exc))
 
 
 @api.get("/services/npm-hosts")
@@ -1363,18 +1407,9 @@ async def create_service(body: ServiceCreate, db: Session = Depends(get_db)):
     if not services_manager.integration_configured("namecheap", nc_cfg):
         raise HTTPException(status_code=400, detail="Configure the Namecheap integration first")
 
-    subdomain = body.subdomain.strip().lower()
-    if not _SUBDOMAIN_RE.match(subdomain):
-        raise HTTPException(status_code=400,
-                            detail="Subdomain must be lowercase letters/digits/hyphens (no leading/trailing hyphen)")
+    subdomain = _validate_subdomain(body.subdomain)
     scheme = body.forward_scheme.strip().lower()
-    if scheme not in ("http", "https"):
-        raise HTTPException(status_code=400, detail="Forward scheme must be http or https")
-    if not (1 <= body.forward_port <= 65535):
-        raise HTTPException(status_code=400, detail="Forward port must be 1-65535")
-    forward_host = body.forward_host.strip()
-    if not forward_host or any(c.isspace() for c in forward_host):
-        raise HTTPException(status_code=400, detail="Forward host is required")
+    _validate_forward(scheme, body.forward_host, body.forward_port)
 
     domain = nc_cfg["domain"].strip().lower()
     if db.query(Service).filter(Service.subdomain == subdomain,
@@ -1383,8 +1418,13 @@ async def create_service(body: ServiceCreate, db: Session = Depends(get_db)):
 
     svc = Service(
         name=body.name.strip() or subdomain, subdomain=subdomain, domain=domain,
-        forward_scheme=scheme, forward_host=forward_host,
+        forward_scheme=scheme, forward_host=body.forward_host.strip(),
         forward_port=body.forward_port, websockets=body.websockets,
+        block_exploits=body.block_exploits, caching_enabled=body.caching_enabled,
+        ssl_forced=body.ssl_forced, http2_support=body.http2_support,
+        hsts_enabled=body.hsts_enabled, hsts_subdomains=body.hsts_subdomains,
+        portainer_container=(body.portainer_container or "").strip() or None,
+        portainer_endpoint_id=body.portainer_endpoint_id,
     )
     db.add(svc)
     db.commit()
@@ -1392,6 +1432,98 @@ async def create_service(body: ServiceCreate, db: Session = Depends(get_db)):
     asyncio.create_task(services_manager.provision_service(
         svc.id, on_update=manager.broadcast_json))
     return _serialize_service(svc)
+
+
+@api.put("/services/{service_id}")
+async def update_service(service_id: int, body: ServiceUpdate,
+                         db: Session = Depends(get_db)):
+    """Edit a service. Forward/toggle changes are pushed to NPM by the
+    pipeline's settings-sync step. A subdomain change is a rename: the old
+    DNS record (if we created it) and our old certificate are removed here,
+    the NPM host's domain list is rewritten in place (preserving any extra
+    domains on imported hosts), and DNS + cert re-provision for the new name.
+    Remote-cleanup hiccups during a rename degrade to `warnings` on the
+    response — the re-provision itself still proceeds."""
+    svc = db.query(Service).filter(Service.id == service_id).first()
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+    if services_manager.service_provisioning(service_id):
+        raise HTTPException(status_code=409, detail="Wait for provisioning to finish first")
+
+    data = body.model_dump(exclude_unset=True)
+    if "subdomain" in data:
+        data["subdomain"] = _validate_subdomain(data["subdomain"])
+    if "forward_scheme" in data:
+        data["forward_scheme"] = (data["forward_scheme"] or "").strip().lower()
+    _validate_forward(data.get("forward_scheme"), data.get("forward_host"),
+                      data.get("forward_port"))
+    if "forward_host" in data:
+        data["forward_host"] = data["forward_host"].strip()
+    if "name" in data:
+        data["name"] = (data["name"] or "").strip() or svc.subdomain
+    if "portainer_container" in data:
+        data["portainer_container"] = (data["portainer_container"] or "").strip() or None
+
+    warnings: list[str] = []
+    new_sub = data.get("subdomain", svc.subdomain)
+    if new_sub != svc.subdomain:
+        if db.query(Service).filter(Service.subdomain == new_sub,
+                                    Service.domain == svc.domain,
+                                    Service.id != svc.id).first():
+            raise HTTPException(status_code=409,
+                                detail=f"A service for {new_sub}.{svc.domain} already exists")
+        old_fqdn = f"{svc.subdomain}.{svc.domain}"
+        new_fqdn = f"{new_sub}.{svc.domain}"
+
+        # Rewrite the NPM host's domain list in place and detach our cert
+        # (it's bound to the old name; LE certs can't be renamed).
+        npm_cfg = services_manager.get_integration_config(db, "npm")
+        if svc.npm_proxy_host_id is not None and \
+                services_manager.integration_configured("npm", npm_cfg):
+            npm = services_manager.npm_client(npm_cfg)
+            try:
+                current = await npm.get_proxy_host(svc.npm_proxy_host_id)
+                domains = [new_fqdn if d == old_fqdn else d
+                           for d in (current.get("domain_names") or [])]
+                if new_fqdn not in domains:
+                    domains.append(new_fqdn)
+                overrides: dict = {"domain_names": domains}
+                if svc.npm_certificate_id is not None:
+                    overrides.update({"certificate_id": 0, "ssl_forced": False,
+                                      "http2_support": False, "hsts_enabled": False,
+                                      "hsts_subdomains": False})
+                await npm.update_proxy_host(svc.npm_proxy_host_id, overrides)
+                if svc.npm_certificate_id is not None:
+                    try:
+                        await npm.delete_certificate(svc.npm_certificate_id)
+                    except Exception as exc:
+                        warnings.append(f"Old certificate #{svc.npm_certificate_id}: {exc}")
+                    svc.npm_certificate_id = None
+            except Exception as exc:
+                warnings.append(f"NPM rename: {exc}")
+
+        # Remove the old DNS record — only the exact one we created.
+        nc_cfg = services_manager.get_integration_config(db, "namecheap")
+        if svc.dns_record_type and \
+                services_manager.integration_configured("namecheap", nc_cfg):
+            try:
+                await services_manager.nc_client(nc_cfg).remove_record(
+                    svc.domain, svc.subdomain, svc.dns_record_type, svc.dns_record_target)
+            except Exception as exc:
+                warnings.append(f"Old DNS record: {exc}")
+        svc.dns_record_type = svc.dns_record_target = None
+        svc.dns_status, svc.dns_detail = "pending", None
+        svc.cert_status, svc.cert_detail = "pending", None
+
+    for field, value in data.items():
+        setattr(svc, field, value)
+    svc.state = "pending"
+    db.commit()
+    asyncio.create_task(services_manager.provision_service(
+        svc.id, on_update=manager.broadcast_json))
+    out = _serialize_service(svc)
+    out["warnings"] = warnings
+    return out
 
 
 @api.post("/services/{service_id}/provision")

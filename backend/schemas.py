@@ -60,13 +60,42 @@ class NotificationConfigUpdate(BaseModel):
 class ServiceCreate(BaseModel):
     """A published web service. The public domain comes from the Namecheap
     integration config (snapshotted onto the row at creation), so the form
-    only supplies the subdomain + where to forward."""
+    only supplies the subdomain + where to forward. The toggle block maps
+    1:1 to NPM proxy-host settings."""
     name: str
     subdomain: str
     forward_scheme: str = "http"
     forward_host: str
     forward_port: int
     websockets: bool = True
+    block_exploits: bool = True
+    caching_enabled: bool = False
+    ssl_forced: bool = True
+    http2_support: bool = True
+    hsts_enabled: bool = False
+    hsts_subdomains: bool = False
+    portainer_container: Optional[str] = None
+    portainer_endpoint_id: Optional[int] = None
+
+
+class ServiceUpdate(BaseModel):
+    """Partial edit. A subdomain change triggers DNS + certificate
+    re-provisioning in the PUT handler; everything else is synced to NPM by
+    the pipeline's settings-sync step."""
+    name: Optional[str] = None
+    subdomain: Optional[str] = None
+    forward_scheme: Optional[str] = None
+    forward_host: Optional[str] = None
+    forward_port: Optional[int] = None
+    websockets: Optional[bool] = None
+    block_exploits: Optional[bool] = None
+    caching_enabled: Optional[bool] = None
+    ssl_forced: Optional[bool] = None
+    http2_support: Optional[bool] = None
+    hsts_enabled: Optional[bool] = None
+    hsts_subdomains: Optional[bool] = None
+    portainer_container: Optional[str] = None
+    portainer_endpoint_id: Optional[int] = None
 
 
 class LoginRequest(BaseModel):

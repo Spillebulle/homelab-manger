@@ -49,7 +49,32 @@ def init_db():
     _migrate_device_cache_unique(engine)
     _migrate_add_poll_interval(engine)
     _migrate_add_shutdown_rule_ordering(engine)
+    _migrate_add_service_columns(engine)
     _migrate_credentials_to_encrypted(engine)
+
+
+def _migrate_add_service_columns(engine):
+    """Add the NPM-toggle + Portainer-link columns to pre-existing `services`
+    tables (the table shipped before these fields existed). Same idempotent
+    PRAGMA table_info + ADD COLUMN pattern as poll_interval."""
+    new_cols = {
+        "block_exploits":        "BOOLEAN DEFAULT 1",
+        "caching_enabled":       "BOOLEAN DEFAULT 0",
+        "ssl_forced":            "BOOLEAN DEFAULT 1",
+        "http2_support":         "BOOLEAN DEFAULT 1",
+        "hsts_enabled":          "BOOLEAN DEFAULT 0",
+        "hsts_subdomains":       "BOOLEAN DEFAULT 0",
+        "portainer_container":   "VARCHAR(255)",
+        "portainer_endpoint_id": "INTEGER",
+    }
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(services)")).fetchall()]
+        if not cols:
+            return  # table doesn't exist yet → create_all makes it complete
+        for name, decl in new_cols.items():
+            if name not in cols:
+                conn.execute(text(f"ALTER TABLE services ADD COLUMN {name} {decl}"))
+                logger.warning("services: added %s column on startup", name)
 
 
 def _migrate_add_poll_interval(engine):

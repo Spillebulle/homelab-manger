@@ -199,64 +199,82 @@
             Open <button @click="openIntegrationsModal()" class="underline hover:text-white">Integrations</button> to set up the connection details.
           </div>
 
-          <!-- Service list -->
-          <div class="space-y-3">
-            <template x-for="s in services" :key="s.id">
-              <div class="bg-card border border-border rounded-lg p-4">
-                <div class="flex items-start justify-between flex-wrap gap-3">
-                  <div class="min-w-0">
-                    <div class="flex items-center gap-2 flex-wrap">
-                      <span class="font-semibold text-white text-sm" x-text="s.name"></span>
-                      <span class="text-[11px] px-2 py-0.5 rounded border"
-                            :class="{
-                              'bg-green-500/15 text-green-300 border-green-600/40': s.state === 'active',
-                              'bg-red-500/15 text-red-300 border-red-600/40':       s.state === 'error',
-                              'bg-blue-500/15 text-blue-300 border-blue-600/40':    s.state === 'provisioning' || s.state === 'pending',
-                            }">
-                        <i x-show="s.state === 'provisioning' || s.state === 'pending'" class="fa-solid fa-circle-notch fa-spin mr-1"></i>
-                        <span x-text="s.state === 'active' ? 'Active' : (s.state === 'error' ? 'Error' : 'Provisioning…')"></span>
+          <!-- Filter (worth it once the list grows) -->
+          <div x-show="services.length > 8" class="mb-3">
+            <input x-model="serviceFilter" class="input w-full max-w-sm" placeholder="Filter services…">
+          </div>
+
+          <!-- Service list — compact one-line rows -->
+          <div class="space-y-1.5">
+            <template x-for="s in filteredServices" :key="s.id">
+              <div class="bg-card border border-border rounded-lg px-3 py-2">
+                <div class="flex items-center gap-3 flex-wrap">
+                  <!-- state dot -->
+                  <span class="w-2.5 h-2.5 rounded-full shrink-0"
+                        :title="s.state"
+                        :class="{
+                          'bg-green-400':              s.state === 'active',
+                          'bg-red-500':                s.state === 'error',
+                          'bg-blue-400 animate-pulse': s.state === 'provisioning' || s.state === 'pending',
+                        }"></span>
+                  <span class="text-sm font-medium text-white w-36 truncate shrink-0" x-text="s.name" :title="s.name"></span>
+                  <a :href="s.url" target="_blank" rel="noopener"
+                     class="text-xs text-blue-400 hover:text-blue-300 font-mono truncate min-w-0 flex-1"
+                     x-text="s.fqdn" :title="s.url"></a>
+                  <span class="text-xs text-gray-500 font-mono shrink-0 hidden md:inline"
+                        x-text="'→ ' + s.forward_host + ':' + s.forward_port"
+                        :title="s.forward_scheme + '://' + s.forward_host + ':' + s.forward_port"></span>
+
+                  <!-- linked container state -->
+                  <template x-if="s.portainer_container">
+                    <a :href="portainerUrl(s) || '#'" :target="portainerUrl(s) ? '_blank' : ''" rel="noopener"
+                       class="shrink-0 flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border border-border"
+                       :class="containerDotClass(containerFor(s))"
+                       :title="'Container: ' + s.portainer_container + (containerFor(s)?.status ? ' — ' + containerFor(s).status : '')">
+                      <i class="fa-brands fa-docker"></i>
+                      <span class="max-w-[8rem] truncate hidden lg:inline" x-text="s.portainer_container"></span>
+                    </a>
+                  </template>
+
+                  <!-- step mini-chips: DNS / proxy / SSL -->
+                  <div class="flex gap-1 shrink-0">
+                    <template x-for="step in serviceSteps(s)" :key="step.key">
+                      <span class="w-5 h-5 rounded flex items-center justify-center text-[9px] border"
+                            :class="stepChipClass(step.status)"
+                            :title="step.label + ': ' + (step.status || 'pending') + (step.detail ? ' — ' + step.detail : '')">
+                        <i class="fa-solid"
+                           :class="{ dns: 'fa-globe', proxy: 'fa-right-left', ssl: 'fa-lock' }[step.key]"></i>
                       </span>
-                    </div>
-                    <a :href="s.url" target="_blank" rel="noopener"
-                       class="text-sm text-blue-400 hover:text-blue-300 font-mono break-all" x-text="s.url"></a>
-                    <div class="text-xs text-gray-500 mt-0.5 font-mono"
-                         x-text="'→ ' + s.forward_scheme + '://' + s.forward_host + ':' + s.forward_port"></div>
+                    </template>
                   </div>
-                  <div class="flex items-center gap-2 shrink-0">
-                    <button x-show="s.state === 'error'" @click="retryService(s)"
-                            class="btn-secondary text-xs">
-                      <i class="fa-solid fa-rotate-right mr-1"></i>Retry
+
+                  <!-- actions -->
+                  <div class="flex items-center shrink-0">
+                    <button x-show="s.state === 'error'" @click="retryService(s)" title="Retry failed steps"
+                            class="text-amber-400 hover:text-amber-300 px-1.5 py-1 rounded hover:bg-panel text-xs">
+                      <i class="fa-solid fa-rotate-right"></i>
+                    </button>
+                    <button @click="openServiceModal(s)" title="Edit"
+                            class="text-gray-400 hover:text-white px-1.5 py-1 rounded hover:bg-panel text-xs">
+                      <i class="fa-solid fa-pen"></i>
                     </button>
                     <button @click="deleteService(s)" title="Delete (removes DNS record + proxy host)"
-                            class="text-red-400 hover:text-red-300 px-2 py-1 rounded hover:bg-panel">
+                            class="text-red-400 hover:text-red-300 px-1.5 py-1 rounded hover:bg-panel text-xs">
                       <i class="fa-solid fa-trash"></i>
                     </button>
                   </div>
                 </div>
-                <!-- Per-step status chips -->
-                <div class="flex flex-wrap gap-2 mt-3">
-                  <template x-for="step in serviceSteps(s)" :key="step.key">
-                    <div class="text-[11px] px-2 py-1 rounded border flex items-center gap-1.5"
-                         :class="stepChipClass(step.status)"
-                         :title="step.detail || ''">
-                      <i class="fa-solid"
-                         :class="{
-                           'fa-check': step.status === 'ok',
-                           'fa-xmark': step.status === 'error',
-                           'fa-hourglass-half': step.status !== 'ok' && step.status !== 'error',
-                         }"></i>
-                      <span x-text="step.label"></span>
-                    </div>
-                  </template>
-                </div>
-                <!-- First error detail, inline so the user doesn't have to hover -->
-                <div x-show="firstServiceError(s)" class="mt-2 text-xs text-red-300 break-words"
+                <!-- error detail, only when something failed -->
+                <div x-show="firstServiceError(s)" class="mt-1 ml-6 text-xs text-red-300 break-words"
                      x-text="firstServiceError(s)"></div>
               </div>
             </template>
             <div x-show="!services.length" class="text-center text-gray-500 py-16">
               <i class="fa-solid fa-globe text-4xl mb-3"></i>
               <p>No services yet. Click <strong class="text-gray-300">Add Service</strong> to publish your first app.</p>
+            </div>
+            <div x-show="services.length && !filteredServices.length" class="text-center text-gray-500 py-8 text-sm">
+              No services match the filter.
             </div>
           </div>
 
@@ -1810,16 +1828,38 @@
     </div>
   </div>
 
-  <!-- ── Add Service Modal ─────────────────────────────────────────────────── -->
+  <!-- ── Add / Edit Service Modal ──────────────────────────────────────────── -->
   <div x-show="serviceModal.show" x-transition class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-    <div @click.stop class="bg-panel border border-border rounded-xl w-full max-w-lg shadow-2xl">
+    <div @click.stop class="bg-panel border border-border rounded-xl w-full max-w-lg shadow-2xl flex flex-col" style="max-height:90vh">
       <div class="px-6 py-4 border-b border-border flex items-center justify-between">
-        <h2 class="font-semibold text-white">Add Service</h2>
+        <h2 class="font-semibold text-white" x-text="serviceModal.editing ? 'Edit Service' : 'Add Service'"></h2>
         <button @click="serviceModal.show = false" class="text-gray-400 hover:text-white">
           <i class="fa-solid fa-xmark"></i>
         </button>
       </div>
-      <div class="p-6 space-y-4">
+      <div class="p-6 space-y-4 overflow-y-auto">
+
+        <!-- Portainer container picker — fills the forward target -->
+        <template x-if="integrations.portainer?.configured">
+          <div>
+            <label class="label">Docker container (Portainer)</label>
+            <select x-model="serviceModal.form.portainer_container" @change="onServiceContainerChange()"
+                    class="input w-full">
+              <option value="">— not linked —</option>
+              <template x-for="c in containers" :key="c.id">
+                <option :value="c.name"
+                        x-text="c.name + (c.state !== 'running' ? ' (' + c.state + ')' : '') +
+                                (c.suggested_port ? ' — :' + c.suggested_port : '')"></option>
+              </template>
+            </select>
+            <p class="text-xs text-gray-500 mt-1" x-show="!containersError">
+              Picking a container fills the forward target below and shows the container's state on the list.
+            </p>
+            <p class="text-xs text-red-300 mt-1" x-show="containersError"
+               x-text="'Could not load containers: ' + containersError"></p>
+          </div>
+        </template>
+
         <div>
           <label class="label">Name</label>
           <input x-model="serviceModal.form.name" class="input w-full" placeholder="e.g. Jellyfin">
@@ -1829,9 +1869,14 @@
           <div class="flex items-center gap-1">
             <span class="text-sm text-gray-500">https://</span>
             <input x-model="serviceModal.form.subdomain" class="input flex-1" placeholder="jellyfin">
-            <span class="text-sm text-gray-400 font-mono" x-text="'.' + (integrations.namecheap?.domain || '…')"></span>
+            <span class="text-sm text-gray-400 font-mono" x-text="'.' + (serviceModal.editing?.domain || integrations.namecheap?.domain || '…')"></span>
           </div>
-          <p class="text-xs text-gray-500 mt-1">Lowercase letters, digits and hyphens.</p>
+          <p class="text-xs text-gray-500 mt-1" x-show="!serviceModal.editing">Lowercase letters, digits and hyphens.</p>
+          <p class="text-xs text-amber-300/90 mt-1"
+             x-show="serviceModal.editing && serviceModal.form.subdomain !== serviceModal.editing?.subdomain">
+            <i class="fa-solid fa-triangle-exclamation mr-1"></i>Changing the address moves the service:
+            the old DNS record is removed and a new record + certificate are provisioned.
+          </p>
         </div>
         <div>
           <label class="label">Forward to (the app on your network)</label>
@@ -1845,13 +1890,49 @@
                    class="input col-span-1" placeholder="8080">
           </div>
         </div>
-        <label class="flex items-center gap-2 text-sm text-gray-300">
-          <input type="checkbox" x-model="serviceModal.form.websockets" class="accent-blue-600">
-          Allow WebSocket upgrade <span class="text-xs text-gray-500">(needed by most modern web apps — leave on if unsure)</span>
-        </label>
+
+        <!-- NPM proxy-host toggles -->
+        <div class="border border-border rounded-lg p-4">
+          <div class="text-xs text-gray-500 uppercase tracking-wide mb-2">Proxy settings (NPM)</div>
+          <div class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm text-gray-300">
+            <label class="flex items-center gap-2">
+              <input type="checkbox" x-model="serviceModal.form.websockets" class="accent-blue-600">
+              WebSockets support
+            </label>
+            <label class="flex items-center gap-2">
+              <input type="checkbox" x-model="serviceModal.form.block_exploits" class="accent-blue-600">
+              Block common exploits
+            </label>
+            <label class="flex items-center gap-2">
+              <input type="checkbox" x-model="serviceModal.form.caching_enabled" class="accent-blue-600">
+              Cache assets
+            </label>
+            <label class="flex items-center gap-2">
+              <input type="checkbox" x-model="serviceModal.form.ssl_forced" class="accent-blue-600">
+              Force SSL
+            </label>
+            <label class="flex items-center gap-2">
+              <input type="checkbox" x-model="serviceModal.form.http2_support" class="accent-blue-600">
+              HTTP/2 support
+            </label>
+            <label class="flex items-center gap-2">
+              <input type="checkbox" x-model="serviceModal.form.hsts_enabled" class="accent-blue-600">
+              HSTS enabled
+            </label>
+            <label class="flex items-center gap-2" :class="!serviceModal.form.hsts_enabled && 'opacity-40'">
+              <input type="checkbox" x-model="serviceModal.form.hsts_subdomains" class="accent-blue-600"
+                     :disabled="!serviceModal.form.hsts_enabled">
+              HSTS subdomains
+            </label>
+          </div>
+          <p class="text-xs text-gray-500 mt-2">
+            SSL-related toggles take effect once the certificate is attached.
+          </p>
+        </div>
+
         <div x-show="serviceModal.error" x-text="serviceModal.error"
              class="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded px-3 py-2"></div>
-        <p class="text-xs text-gray-500">
+        <p class="text-xs text-gray-500" x-show="!serviceModal.editing">
           On save: a <span class="font-mono" x-text="(integrations.namecheap?.record_type || 'CNAME')"></span> record is created in Namecheap,
           a proxy host in Nginx Proxy Manager, and a Let's Encrypt certificate is requested.
           The certificate can take a minute — progress shows on the list.
@@ -1860,7 +1941,8 @@
       <div class="px-6 py-4 border-t border-border flex justify-end gap-2">
         <button @click="serviceModal.show = false" class="btn-secondary">Cancel</button>
         <button @click="saveService()" :disabled="serviceModal.busy" class="btn-primary disabled:opacity-50">
-          <i x-show="serviceModal.busy" class="fa-solid fa-circle-notch fa-spin mr-1"></i>Create
+          <i x-show="serviceModal.busy" class="fa-solid fa-circle-notch fa-spin mr-1"></i>
+          <span x-text="serviceModal.editing ? 'Save' : 'Create'"></span>
         </button>
       </div>
     </div>
@@ -1963,6 +2045,46 @@
           <div x-show="integrationsModal.ncTest" class="text-xs rounded px-3 py-2 border"
                :class="integrationsModal.ncTest?.ok ? 'text-green-300 bg-green-500/10 border-green-600/40' : 'text-red-300 bg-red-500/10 border-red-600/40'"
                x-text="integrationsModal.ncTest?.detail"></div>
+        </div>
+
+        <!-- Portainer (optional — container links + forward-target suggestions) -->
+        <div class="border border-border rounded-lg p-4 space-y-3">
+          <div class="flex items-center justify-between">
+            <div class="text-xs text-gray-400 uppercase tracking-wide font-semibold">
+              Portainer <span class="normal-case font-normal text-gray-500">(optional)</span>
+            </div>
+            <button @click="testIntegration('portainer')" :disabled="integrationsModal.busy" class="btn-secondary text-xs">
+              <i class="fa-solid fa-plug-circle-check mr-1"></i>Test
+            </button>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="label">URL (e.g. https://192.168.1.10:9443)</label>
+              <input x-model="integrationsModal.portainer.base_url" class="input w-full" placeholder="https://192.168.1.10:9443">
+            </div>
+            <div>
+              <label class="label">API access token</label>
+              <input x-model="integrationsModal.portainer.api_key" type="password" class="input w-full"
+                     :placeholder="integrations.portainer?.configured ? '(unchanged — leave blank to keep)' : 'ptr_…'">
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="label">Environment ID (blank = first)</label>
+              <input x-model="integrationsModal.portainer.endpoint_id" class="input w-full" placeholder="auto">
+            </div>
+            <div>
+              <label class="label">Docker host IP (blank = Portainer's host)</label>
+              <input x-model="integrationsModal.portainer.docker_host_ip" class="input w-full" placeholder="from URL">
+            </div>
+          </div>
+          <p class="text-xs text-gray-500">
+            Read-only: used to suggest forward targets from container ports and show container
+            state next to linked services. Create a token under My account → Access tokens.
+          </p>
+          <div x-show="integrationsModal.ptTest" class="text-xs rounded px-3 py-2 border"
+               :class="integrationsModal.ptTest?.ok ? 'text-green-300 bg-green-500/10 border-green-600/40' : 'text-red-300 bg-red-500/10 border-red-600/40'"
+               x-text="integrationsModal.ptTest?.detail"></div>
         </div>
       </div>
       <div class="px-6 py-4 border-t border-border flex justify-end gap-2">
@@ -2241,11 +2363,15 @@
       // 'dashboard' (default) or 'services'.
       page: 'dashboard',
       services: [],
+      serviceFilter: '',
       npmHosts: [],          // live NPM proxy-host list, for the sync section
       npmHostsError: '',
-      integrations: { npm: {}, namecheap: {} },
-      serviceModal: { show: false, busy: false, error: '', form: {} },
-      integrationsModal: { show: false, busy: false, npm: {}, namecheap: {}, npmTest: null, ncTest: null },
+      containers: [],        // live Portainer container list (dropdown + state dots)
+      containersError: '',
+      integrations: { npm: {}, namecheap: {}, portainer: {} },
+      serviceModal: { show: false, busy: false, error: '', editing: null, form: {} },
+      integrationsModal: { show: false, busy: false, npm: {}, namecheap: {}, portainer: {},
+                           npmTest: null, ncTest: null, ptTest: null },
       _servicesPollTimer: null,
 
       // ── UPS graphs ────────────────────────────────────────────────────────
@@ -2476,7 +2602,49 @@
         this.page = 'services';
         await Promise.all([this.loadServices(), this.loadIntegrations()]);
         this._watchProvisioning();
-        this.loadNpmHosts();   // fire-and-forget; section fills in when it lands
+        this.loadNpmHosts();     // fire-and-forget; section fills in when it lands
+        this.loadContainers();   // fire-and-forget; powers container state dots
+      },
+
+      get filteredServices() {
+        if (!this.serviceFilter) return this.services;
+        const q = this.serviceFilter.toLowerCase();
+        return this.services.filter(s =>
+          (s.name || '').toLowerCase().includes(q) ||
+          (s.fqdn || '').toLowerCase().includes(q) ||
+          (s.forward_host || '').toLowerCase().includes(q) ||
+          (s.portainer_container || '').toLowerCase().includes(q));
+      },
+
+      async loadContainers() {
+        if (!this.integrations.portainer?.configured) { this.containers = []; return; }
+        this.containersError = '';
+        try {
+          const r = await fetch('/api/services/containers');
+          if (r.ok) { this.containers = await r.json(); return; }
+          const d = await r.json().catch(() => ({}));
+          this.containersError = d.detail || `HTTP ${r.status}`;
+        } catch (e) { this.containersError = String(e); }
+      },
+
+      containerFor(s) {
+        if (!s.portainer_container) return null;
+        return this.containers.find(c => c.name === s.portainer_container) || null;
+      },
+
+      containerDotClass(c) {
+        if (!c) return 'text-gray-500';                 // unknown (Portainer unreachable / container gone)
+        if (c.state === 'running') return 'text-green-400';
+        if (['paused', 'restarting', 'created'].includes(c.state)) return 'text-amber-400';
+        return 'text-red-400';                          // exited / dead
+      },
+
+      portainerUrl(s) {
+        const base = (this.integrations.portainer?.base_url || '').replace(/\/$/, '');
+        const c = this.containerFor(s);
+        if (!base || !c) return null;
+        const ep = s.portainer_endpoint_id || c.endpoint_id;
+        return `${base}/#!/${ep}/docker/containers/${c.id}`;
       },
 
       async loadNpmHosts() {
@@ -2573,38 +2741,91 @@
         }, 3000);
       },
 
-      openServiceModal() {
+      openServiceModal(svc = null) {
         this.serviceModal = {
-          show: true, busy: false, error: '',
-          form: { name: '', subdomain: '', forward_scheme: 'http', forward_host: '', forward_port: '', websockets: true },
+          show: true, busy: false, error: '', editing: svc,
+          form: svc ? {
+            name: svc.name,
+            subdomain: svc.subdomain,
+            forward_scheme: svc.forward_scheme,
+            forward_host: svc.forward_host,
+            forward_port: svc.forward_port,
+            websockets: svc.websockets,
+            block_exploits: svc.block_exploits,
+            caching_enabled: svc.caching_enabled,
+            ssl_forced: svc.ssl_forced,
+            http2_support: svc.http2_support,
+            hsts_enabled: svc.hsts_enabled,
+            hsts_subdomains: svc.hsts_subdomains,
+            portainer_container: svc.portainer_container || '',
+            portainer_endpoint_id: svc.portainer_endpoint_id,
+          } : {
+            name: '', subdomain: '', forward_scheme: 'http', forward_host: '', forward_port: '',
+            websockets: true, block_exploits: true, caching_enabled: false,
+            ssl_forced: true, http2_support: true, hsts_enabled: false, hsts_subdomains: false,
+            portainer_container: '', portainer_endpoint_id: null,
+          },
         };
+        // Refresh the dropdown data in the background (cheap; tolerates failure).
+        if (this.integrations.portainer?.configured) this.loadContainers();
+      },
+
+      // Picking a container fills the forward target with its suggested
+      // host/port (docker host + published port, or network IP + exposed
+      // port) and seeds name/subdomain on a fresh form.
+      onServiceContainerChange() {
+        const f = this.serviceModal.form;
+        const c = this.containers.find(x => x.name === f.portainer_container);
+        if (!c) { f.portainer_endpoint_id = null; return; }
+        f.portainer_endpoint_id = c.endpoint_id;
+        if (c.suggested_host) f.forward_host = c.suggested_host;
+        if (c.suggested_port) f.forward_port = c.suggested_port;
+        if (!this.serviceModal.editing) {
+          if (!f.name) f.name = c.name;
+          if (!f.subdomain) f.subdomain = c.name.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+        }
       },
 
       async saveService() {
         const f = this.serviceModal.form;
+        const editing = this.serviceModal.editing;
         this.serviceModal.error = '';
         const port = parseInt(f.forward_port, 10);
         if (!f.subdomain) { this.serviceModal.error = 'Subdomain is required'; return; }
         if (!f.forward_host) { this.serviceModal.error = 'Forward host is required'; return; }
         if (isNaN(port) || port < 1 || port > 65535) { this.serviceModal.error = 'Forward port must be 1-65535'; return; }
+        const payload = {
+          name: f.name || f.subdomain,
+          subdomain: f.subdomain.trim().toLowerCase(),
+          forward_scheme: f.forward_scheme,
+          forward_host: f.forward_host.trim(),
+          forward_port: port,
+          websockets: !!f.websockets,
+          block_exploits: !!f.block_exploits,
+          caching_enabled: !!f.caching_enabled,
+          ssl_forced: !!f.ssl_forced,
+          http2_support: !!f.http2_support,
+          hsts_enabled: !!f.hsts_enabled,
+          hsts_subdomains: !!(f.hsts_subdomains && f.hsts_enabled),
+          portainer_container: f.portainer_container || null,
+          portainer_endpoint_id: f.portainer_endpoint_id || null,
+        };
         this.serviceModal.busy = true;
         try {
-          const r = await fetch('/api/services', {
-            method:  'POST',
+          const r = await fetch(editing ? `/api/services/${editing.id}` : '/api/services', {
+            method:  editing ? 'PUT' : 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body:    JSON.stringify({
-              name: f.name || f.subdomain,
-              subdomain: f.subdomain.trim().toLowerCase(),
-              forward_scheme: f.forward_scheme,
-              forward_host: f.forward_host.trim(),
-              forward_port: port,
-              websockets: !!f.websockets,
-            }),
+            body:    JSON.stringify(payload),
           });
           const data = await r.json().catch(() => ({}));
-          if (!r.ok) { this.serviceModal.error = data.detail || 'Failed to create service'; return; }
+          if (!r.ok) { this.serviceModal.error = data.detail || 'Failed to save service'; return; }
           this.serviceModal.show = false;
-          this.showToast('Service created — provisioning DNS, proxy and certificate…');
+          if (data.warnings?.length) {
+            this.showToast('Saved with warnings:\n' + data.warnings.join('\n'), 'warning');
+          } else {
+            this.showToast(editing ? 'Service updated — syncing to NPM…'
+                                   : 'Service created — provisioning DNS, proxy and certificate…');
+          }
           await this.loadServices();
           this._watchProvisioning();
         } finally {
@@ -2649,10 +2870,12 @@
         // Editable copies; secrets come back blanked and blank means "keep".
         const strip = (cfg) => { const { configured, ...rest } = cfg || {}; return rest; };
         this.integrationsModal = {
-          show: true, busy: false, npmTest: null, ncTest: null,
+          show: true, busy: false, npmTest: null, ncTest: null, ptTest: null,
           npm: { base_url: '', email: '', password: '', le_email: '', ...strip(this.integrations.npm) },
           namecheap: { api_user: '', api_key: '', username: '', client_ip: '', domain: '',
                        record_type: 'CNAME', record_target: '', ...strip(this.integrations.namecheap) },
+          portainer: { base_url: '', api_key: '', endpoint_id: '', docker_host_ip: '',
+                       ...strip(this.integrations.portainer) },
         };
       },
 
@@ -2664,11 +2887,12 @@
             headers: { 'Content-Type': 'application/json' },
             body:    JSON.stringify(cfg),
           });
-          const [r1, r2] = await Promise.all([
+          const results = await Promise.all([
             save('npm', this.integrationsModal.npm),
             save('namecheap', this.integrationsModal.namecheap),
+            save('portainer', this.integrationsModal.portainer),
           ]);
-          if (r1.ok && r2.ok) {
+          if (results.every(r => r.ok)) {
             this.showToast('Integration settings saved');
             await this.loadIntegrations();
           } else {
@@ -2682,7 +2906,7 @@
       async testIntegration(name) {
         // Save first so the test runs against what's on screen.
         await this.saveIntegrations();
-        const key = name === 'npm' ? 'npmTest' : 'ncTest';
+        const key = { npm: 'npmTest', namecheap: 'ncTest', portainer: 'ptTest' }[name];
         this.integrationsModal[key] = { ok: true, detail: 'Testing…' };
         try {
           const r = await fetch(`/api/integrations/${name}/test`, { method: 'POST' });

@@ -105,36 +105,34 @@ class NPMClient:
                 return h
         return None
 
-    def _proxy_host_payload(self, fqdn: str, scheme: str, host: str, port: int,
-                            websockets: bool, certificate_id: int = 0) -> dict:
-        return {
+    async def create_proxy_host(self, fqdn: str, scheme: str, host: str, port: int,
+                                opts: dict | None = None) -> dict:
+        """Create the proxy host WITHOUT a certificate (SSL fields stay off
+        regardless of `opts` until a cert exists — NPM rejects ssl_forced with
+        certificate_id 0). SSL is attached as a separate step so a slow/failed
+        Let's Encrypt issuance doesn't take the whole proxy host down with
+        it — HTTP keeps working and the cert step can be retried. `opts` holds
+        the non-SSL toggles: allow_websocket_upgrade / block_exploits /
+        caching_enabled."""
+        opts = opts or {}
+        return await self._request("POST", "/nginx/proxy-hosts", {
             "domain_names": [fqdn],
             "forward_scheme": scheme,
             "forward_host": host,
             "forward_port": int(port),
-            "certificate_id": certificate_id,
-            "ssl_forced": bool(certificate_id),
-            "http2_support": bool(certificate_id),
+            "certificate_id": 0,
+            "ssl_forced": False,
+            "http2_support": False,
             "hsts_enabled": False,
             "hsts_subdomains": False,
-            "allow_websocket_upgrade": bool(websockets),
-            "block_exploits": True,
-            "caching_enabled": False,
+            "allow_websocket_upgrade": bool(opts.get("allow_websocket_upgrade", True)),
+            "block_exploits": bool(opts.get("block_exploits", True)),
+            "caching_enabled": bool(opts.get("caching_enabled", False)),
             "access_list_id": 0,
             "advanced_config": "",
             "meta": {"letsencrypt_agree": False, "dns_challenge": False},
             "locations": [],
-        }
-
-    async def create_proxy_host(self, fqdn: str, scheme: str, host: str, port: int,
-                                websockets: bool) -> dict:
-        """Create the proxy host WITHOUT a certificate. SSL is attached as a
-        separate step so a slow/failed Let's Encrypt issuance doesn't take the
-        whole proxy host down with it — HTTP keeps working and the cert step
-        can be retried."""
-        return await self._request(
-            "POST", "/nginx/proxy-hosts",
-            self._proxy_host_payload(fqdn, scheme, host, port, websockets))
+        })
 
     async def get_proxy_host(self, proxy_host_id: int) -> dict:
         return await self._request("GET", f"/nginx/proxy-hosts/{proxy_host_id}")
@@ -151,19 +149,36 @@ class NPMClient:
     )
     _EDITABLE_META_KEYS = ("letsencrypt_agree", "letsencrypt_email", "dns_challenge")
 
-    async def attach_certificate(self, proxy_host_id: int, certificate_id: int) -> dict:
-        """GET-modify-PUT: flip only the SSL fields and send everything else
-        back unchanged. Rebuilding the payload from scratch here would wipe
-        custom advanced_config / locations / access lists on hosts that were
-        adopted or imported rather than created by us."""
+    async def update_proxy_host(self, proxy_host_id: int, overrides: dict) -> dict:
+        """GET-modify-PUT: apply `overrides` on top of the host's current
+        config and send everything else back unchanged. Rebuilding the payload
+        from scratch here would wipe custom advanced_config / locations /
+        access lists on hosts that were adopted or imported rather than
+        created by us. Callers can read the pre-update state via the
+        `_current` key on the result."""
         current = await self.get_proxy_host(proxy_host_id)
         payload = {k: current[k] for k in self._EDITABLE_HOST_KEYS
                    if k in current and current[k] is not None}
         meta = current.get("meta") or {}
         payload["meta"] = {k: meta[k] for k in self._EDITABLE_META_KEYS if k in meta}
-        payload.update({"certificate_id": certificate_id,
-                        "ssl_forced": True, "http2_support": True})
-        return await self._request("PUT", f"/nginx/proxy-hosts/{proxy_host_id}", payload)
+        payload.update(overrides)
+        result = await self._request("PUT", f"/nginx/proxy-hosts/{proxy_host_id}", payload)
+        if isinstance(result, dict):
+            result["_current"] = current
+        return result
+
+    async def attach_certificate(self, proxy_host_id: int, certificate_id: int,
+                                 ssl_opts: dict | None = None) -> dict:
+        """Enable the certificate plus the service's SSL toggles, leaving
+        everything else on the host as-is."""
+        ssl_opts = ssl_opts or {}
+        return await self.update_proxy_host(proxy_host_id, {
+            "certificate_id": certificate_id,
+            "ssl_forced": bool(ssl_opts.get("ssl_forced", True)),
+            "http2_support": bool(ssl_opts.get("http2_support", True)),
+            "hsts_enabled": bool(ssl_opts.get("hsts_enabled", False)),
+            "hsts_subdomains": bool(ssl_opts.get("hsts_subdomains", False)),
+        })
 
     async def delete_proxy_host(self, proxy_host_id: int) -> None:
         try:

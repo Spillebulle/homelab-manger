@@ -207,7 +207,21 @@ class Service(Base):
     forward_scheme = Column(String(8), nullable=False, default="http")
     forward_host = Column(String(255), nullable=False)
     forward_port = Column(Integer, nullable=False)
+    # NPM proxy-host settings, pushed to NPM by the pipeline's sync step.
+    # (Columns after `websockets` are ALTER-ed into pre-existing tables by
+    # _migrate_add_service_columns — keep that migration in step.)
     websockets = Column(Boolean, default=True)
+    block_exploits = Column(Boolean, default=True)
+    caching_enabled = Column(Boolean, default=False)
+    ssl_forced = Column(Boolean, default=True)
+    http2_support = Column(Boolean, default=True)
+    hsts_enabled = Column(Boolean, default=False)
+    hsts_subdomains = Column(Boolean, default=False)
+    # Optional link to a Portainer container (by name — stable across
+    # container recreations, unlike the id). Display/navigation only; nothing
+    # is ever sent to Portainer.
+    portainer_container = Column(String(255), nullable=True)
+    portainer_endpoint_id = Column(Integer, nullable=True)
     # Remote object ids / record identity, for retry-adoption and cleanup.
     npm_proxy_host_id = Column(Integer, nullable=True)
     npm_certificate_id = Column(Integer, nullable=True)

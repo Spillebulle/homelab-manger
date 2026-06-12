@@ -23,6 +23,7 @@ from .database import SessionLocal
 from .models import Integration, Service
 from .services_namecheap import NamecheapClient
 from .services_npm import NPMClient, NPMError
+from .services_portainer import PortainerClient, host_from_url
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,11 @@ logger = logging.getLogger(__name__)
 # in INTEGRATION_SECRET_KEYS and get the blank-keeps-existing PUT treatment).
 NPM_REQUIRED = ("base_url", "email", "password", "le_email")
 NC_REQUIRED = ("api_user", "api_key", "username", "client_ip", "domain")
-INTEGRATION_SECRET_KEYS = {"npm": {"password"}, "namecheap": {"api_key"}}
+PORTAINER_REQUIRED = ("base_url", "api_key")
+INTEGRATION_REQUIRED = {"npm": NPM_REQUIRED, "namecheap": NC_REQUIRED,
+                        "portainer": PORTAINER_REQUIRED}
+INTEGRATION_SECRET_KEYS = {"npm": {"password"}, "namecheap": {"api_key"},
+                           "portainer": {"api_key"}}
 
 _CERT_ATTEMPTS = 3
 _CERT_RETRY_DELAY = 25  # seconds between Let's Encrypt attempts (DNS propagation)
@@ -46,7 +51,7 @@ def get_integration_config(db: Session, name: str) -> dict:
 
 
 def integration_configured(name: str, cfg: dict) -> bool:
-    required = NPM_REQUIRED if name == "npm" else NC_REQUIRED
+    required = INTEGRATION_REQUIRED.get(name, ())
     return all(str(cfg.get(k) or "").strip() for k in required)
 
 
@@ -57,6 +62,113 @@ def npm_client(cfg: dict) -> NPMClient:
 def nc_client(cfg: dict) -> NamecheapClient:
     return NamecheapClient(cfg["api_user"], cfg["api_key"], cfg["username"],
                            cfg["client_ip"])
+
+
+def portainer_client(cfg: dict) -> PortainerClient:
+    return PortainerClient(cfg["base_url"], cfg["api_key"])
+
+
+def docker_host_ip(cfg: dict) -> str | None:
+    """The LAN address NPM should forward to for containers with published
+    ports. Explicit `docker_host_ip` config wins; otherwise the Portainer
+    URL's host (Portainer usually runs on the Docker host itself)."""
+    return str(cfg.get("docker_host_ip") or "").strip() or host_from_url(cfg.get("base_url", ""))
+
+
+# NPM toggle groups, derived from the service row. SSL toggles are only
+# meaningful once a certificate is attached (NPM rejects ssl_forced on a
+# cert-less host), so they're applied by the cert step / settings sync, not
+# at proxy-host creation.
+def _npm_opts(svc: Service) -> dict:
+    return {
+        "allow_websocket_upgrade": bool(svc.websockets),
+        "block_exploits": bool(svc.block_exploits),
+        "caching_enabled": bool(svc.caching_enabled),
+    }
+
+
+def _ssl_opts(svc: Service) -> dict:
+    return {
+        "ssl_forced": bool(svc.ssl_forced),
+        "http2_support": bool(svc.http2_support),
+        "hsts_enabled": bool(svc.hsts_enabled),
+        # NPM requires HSTS itself before subdomains can be on.
+        "hsts_subdomains": bool(svc.hsts_subdomains and svc.hsts_enabled),
+    }
+
+
+async def list_portainer_containers(db: Session) -> list[dict]:
+    """Normalized container list with a suggested forward target per
+    container: host IP + first published port when ports are published,
+    else the container's first network IP + first exposed port (reachable
+    only if NPM shares a Docker network with it)."""
+    cfg = get_integration_config(db, "portainer")
+    if not integration_configured("portainer", cfg):
+        raise ValueError("Portainer integration is not configured")
+    client = portainer_client(cfg)
+    try:
+        endpoint_id = int(cfg.get("endpoint_id") or 0)
+    except (TypeError, ValueError):
+        endpoint_id = 0
+    if not endpoint_id:
+        endpoint_id = await client.first_endpoint_id()
+    containers = await client.containers(endpoint_id)
+    host_ip = docker_host_ip(cfg)
+    for c in containers:
+        published = [p for p in c["ports"] if p.get("public")]
+        if published:
+            c["suggested_host"] = host_ip
+            c["suggested_port"] = published[0]["public"]
+        else:
+            c["suggested_host"] = next(iter(c["networks"].values()), None)
+            c["suggested_port"] = c["ports"][0]["private"] if c["ports"] else None
+        c["endpoint_id"] = endpoint_id
+    return containers
+
+
+def match_container(containers: list[dict], forward_host: str,
+                    forward_port: int, host_ip: str | None) -> str | None:
+    """Best-effort guess of which container a forward target points at:
+    docker-host IP + published port, a container network IP, or the
+    container's name (NPM on the same Docker network resolves names)."""
+    fh = str(forward_host or "").strip().lower()
+    if not fh:
+        return None
+    if host_ip and fh == host_ip.lower():
+        for c in containers:
+            if any(p.get("public") == forward_port for p in c["ports"]):
+                return c["name"]
+        return None  # it's the docker host, but no container publishes that port
+    for c in containers:
+        if fh in (ip.lower() for ip in c["networks"].values()):
+            return c["name"]
+    for c in containers:
+        if fh == c["name"].lower():
+            return c["name"]
+    return None
+
+
+async def find_portainer_match(db: Session, forward_host: str,
+                               forward_port: int) -> tuple[str | None, int | None]:
+    """(container_name, endpoint_id) guess for a forward target — used by NPM
+    import to auto-link. Best-effort: any Portainer hiccup returns no match."""
+    cfg = get_integration_config(db, "portainer")
+    if not integration_configured("portainer", cfg):
+        return None, None
+    try:
+        client = portainer_client(cfg)
+        try:
+            endpoint_id = int(cfg.get("endpoint_id") or 0)
+        except (TypeError, ValueError):
+            endpoint_id = 0
+        if not endpoint_id:
+            endpoint_id = await client.first_endpoint_id()
+        containers = await client.containers(endpoint_id)
+    except Exception as exc:
+        logger.debug("Portainer match skipped: %s", exc)
+        return None, None
+    name = match_container(containers, forward_host, forward_port, docker_host_ip(cfg))
+    return (name, endpoint_id) if name else (None, None)
 
 
 def dns_record_plan(cfg: dict) -> tuple[str, str, int]:
@@ -120,14 +232,39 @@ async def provision_service(service_id: int, on_update=None) -> None:
             db.commit()
             await _broadcast(on_update, service_id)
 
-        # ── Step 2: proxy host (NPM), no cert yet ─────────────────────────
+        # ── Step 2: proxy host (NPM) ───────────────────────────────────────
+        # Create/adopt when we don't hold a host id yet; otherwise push the
+        # service's current settings (forward target + toggles) onto the
+        # host. Running the sync on every pipeline pass is what makes "edit a
+        # service" just be "update the row, re-run the pipeline".
         npm = None
-        if svc.npm_status != "ok":
-            if not integration_configured("npm", npm_cfg):
-                svc.npm_status, svc.npm_detail = "error", "NPM integration is not configured"
-            else:
-                try:
-                    npm = npm_client(npm_cfg)
+        if not integration_configured("npm", npm_cfg):
+            svc.npm_status, svc.npm_detail = "error", "NPM integration is not configured"
+        else:
+            npm = npm_client(npm_cfg)
+            try:
+                if svc.npm_proxy_host_id is not None:
+                    overrides = {
+                        "forward_scheme": svc.forward_scheme,
+                        "forward_host": svc.forward_host,
+                        "forward_port": int(svc.forward_port),
+                        **_npm_opts(svc),
+                    }
+                    # SSL toggles only once a cert is attached — NPM rejects
+                    # ssl_forced on a cert-less host. domain_names are NOT
+                    # synced here (imported hosts may serve extra domains;
+                    # renames handle domains in the PUT handler).
+                    if svc.cert_status == "ok":
+                        overrides.update(_ssl_opts(svc))
+                    try:
+                        await npm.update_proxy_host(svc.npm_proxy_host_id, overrides)
+                        svc.npm_detail = f"Settings synced to proxy host #{svc.npm_proxy_host_id}"
+                    except NPMError as exc:
+                        if "404" not in str(exc):
+                            raise
+                        # Host was deleted behind our back — recreate below.
+                        svc.npm_proxy_host_id = None
+                if svc.npm_proxy_host_id is None:
                     existing = await npm.find_proxy_host(fqdn)
                     if existing:
                         svc.npm_proxy_host_id = existing["id"]
@@ -144,16 +281,16 @@ async def provision_service(service_id: int, on_update=None) -> None:
                     else:
                         created = await npm.create_proxy_host(
                             fqdn, svc.forward_scheme, svc.forward_host,
-                            svc.forward_port, bool(svc.websockets))
+                            svc.forward_port, _npm_opts(svc))
                         svc.npm_proxy_host_id = created["id"]
                         svc.npm_detail = (f"Proxy host #{created['id']}: {fqdn} → "
                                           f"{svc.forward_scheme}://{svc.forward_host}:{svc.forward_port}")
-                    svc.npm_status = "ok"
-                except Exception as exc:
-                    svc.npm_status, svc.npm_detail = "error", str(exc)
-                    logger.warning("SERVICE %s: NPM step failed: %s", fqdn, exc)
-            db.commit()
-            await _broadcast(on_update, service_id)
+                svc.npm_status = "ok"
+            except Exception as exc:
+                svc.npm_status, svc.npm_detail = "error", str(exc)
+                logger.warning("SERVICE %s: NPM step failed: %s", fqdn, exc)
+        db.commit()
+        await _broadcast(on_update, service_id)
 
         # ── Step 3: Let's Encrypt cert, attached to the proxy host ────────
         # Requires both prior steps: the DNS record for the HTTP-01 challenge
@@ -177,7 +314,8 @@ async def provision_service(service_id: int, on_update=None) -> None:
                                 await asyncio.sleep(_CERT_RETRY_DELAY)
                     if cert is None:
                         raise last_exc or NPMError("certificate creation failed")
-                await npm.attach_certificate(svc.npm_proxy_host_id, cert["id"])
+                await npm.attach_certificate(svc.npm_proxy_host_id, cert["id"],
+                                             _ssl_opts(svc))
                 svc.npm_certificate_id = cert["id"]
                 svc.cert_status = "ok"
                 svc.cert_detail = f"Let's Encrypt certificate #{cert['id']} attached, HTTPS forced"
@@ -232,6 +370,10 @@ async def import_npm_host(db: Session, npm_proxy_host_id: int) -> Service:
 
     extra = f" (+{len(domains) - 1} more domain(s) on the same host)" if len(domains) > 1 else ""
     has_cert = bool(host.get("certificate_id"))
+    # Best-effort Portainer auto-link by forward target (no-op if Portainer
+    # isn't configured or nothing matches).
+    container, endpoint_id = await find_portainer_match(
+        db, host.get("forward_host") or "", int(host.get("forward_port") or 0))
     svc = Service(
         name=subdomain,
         subdomain=subdomain,
@@ -240,6 +382,14 @@ async def import_npm_host(db: Session, npm_proxy_host_id: int) -> Service:
         forward_host=host.get("forward_host") or "",
         forward_port=int(host.get("forward_port") or 80),
         websockets=bool(host.get("allow_websocket_upgrade")),
+        block_exploits=bool(host.get("block_exploits")),
+        caching_enabled=bool(host.get("caching_enabled")),
+        ssl_forced=bool(host.get("ssl_forced")) if has_cert else True,
+        http2_support=bool(host.get("http2_support")) if has_cert else True,
+        hsts_enabled=bool(host.get("hsts_enabled")),
+        hsts_subdomains=bool(host.get("hsts_subdomains")),
+        portainer_container=container,
+        portainer_endpoint_id=endpoint_id,
         npm_proxy_host_id=npm_proxy_host_id,
         # npm_certificate_id stays NULL: that field means "cert we created and
         # may delete on cleanup" — a pre-existing cert can be shared.
