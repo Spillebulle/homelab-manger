@@ -107,3 +107,19 @@ def host_from_url(base_url: str) -> str | None:
         return host or None
     except ValueError:
         return None
+
+
+def endpoint_host_ip(endpoint: dict, fallback: str | None) -> str | None:
+    """The Docker host's address for one Portainer environment, derived from
+    the endpoint's own URL: agent/remote endpoints look like
+    `tcp://192.168.1.20:9001` → that host is where the containers' published
+    ports live. Local socket endpoints (`unix://`, `npipe://`, or blank) have
+    no host in the URL, so they fall back to the configured `docker_host_ip`
+    (or the Portainer URL's host — for the local endpoint, Portainer runs on
+    that same machine)."""
+    url = str(endpoint.get("URL") or "")
+    if url.startswith("tcp://"):
+        host = host_from_url(url)
+        if host and host not in ("localhost", "127.0.0.1"):
+            return host
+    return fallback

@@ -1375,26 +1375,51 @@ async def list_npm_hosts(db: Session = Depends(get_db)):
             "forward_port": h.get("forward_port"),
             "certificate_id": h.get("certificate_id") or 0,
             "enabled": bool(h.get("enabled")),
+            # Toggle values, so the import modal can prefill its checkboxes.
+            "websockets": bool(h.get("allow_websocket_upgrade")),
+            "block_exploits": bool(h.get("block_exploits")),
+            "caching_enabled": bool(h.get("caching_enabled")),
+            "ssl_forced": bool(h.get("ssl_forced")),
+            "http2_support": bool(h.get("http2_support")),
+            "hsts_enabled": bool(h.get("hsts_enabled")),
+            "hsts_subdomains": bool(h.get("hsts_subdomains")),
         }
         for h in hosts
     ]
 
 
+_IMPORT_OVERRIDE_KEYS = (
+    "name", "forward_scheme", "forward_host", "forward_port",
+    "websockets", "block_exploits", "caching_enabled", "ssl_forced",
+    "http2_support", "hsts_enabled", "hsts_subdomains",
+    "portainer_container", "portainer_endpoint_id",
+)
+
+
 @api.post("/services/npm-import", status_code=201)
 async def import_npm_host(body: dict, db: Session = Depends(get_db)):
     """Take an existing NPM proxy host under management. Body:
-    {"npm_proxy_host_id": <id>}."""
+    {"npm_proxy_host_id": <id>, ...user edits from the import modal}. The
+    pipeline runs after import, so edits sync back to NPM and a missing
+    certificate gets issued."""
     try:
         host_id = int(body.get("npm_proxy_host_id"))
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="npm_proxy_host_id is required")
+    overrides = {k: v for k, v in (body or {}).items() if k in _IMPORT_OVERRIDE_KEYS}
+    if "forward_scheme" in overrides:
+        overrides["forward_scheme"] = str(overrides["forward_scheme"] or "").strip().lower()
+    _validate_forward(overrides.get("forward_scheme"), overrides.get("forward_host"),
+                      overrides.get("forward_port"))
     try:
-        svc = await services_manager.import_npm_host(db, host_id)
+        svc = await services_manager.import_npm_host(db, host_id, overrides)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         logger.warning("NPM host import failed: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc))
+    asyncio.create_task(services_manager.provision_service(
+        svc.id, on_update=manager.broadcast_json))
     return _serialize_service(svc)
 
 

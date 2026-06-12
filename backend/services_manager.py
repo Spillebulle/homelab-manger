@@ -23,7 +23,7 @@ from .database import SessionLocal
 from .models import Integration, Service
 from .services_namecheap import NamecheapClient
 from .services_npm import NPMClient, NPMError
-from .services_portainer import PortainerClient, host_from_url
+from .services_portainer import PortainerClient, endpoint_host_ip, host_from_url
 
 logger = logging.getLogger(__name__)
 
@@ -98,53 +98,74 @@ def _ssl_opts(svc: Service) -> dict:
 
 
 async def list_portainer_containers(db: Session) -> list[dict]:
-    """Normalized container list with a suggested forward target per
-    container: host IP + first published port when ports are published,
-    else the container's first network IP + first exposed port (reachable
-    only if NPM shares a Docker network with it)."""
+    """Containers across ALL Portainer environments (or just the configured
+    `endpoint_id` when set), each annotated with its environment and that
+    environment's Docker-host IP (from the endpoint's own URL — agent
+    endpoints run on different machines). Suggested forward target per
+    container: the endpoint's host IP + first published port when ports are
+    published, else the container's first network IP + first exposed port
+    (reachable only if NPM shares a Docker network with it)."""
     cfg = get_integration_config(db, "portainer")
     if not integration_configured("portainer", cfg):
         raise ValueError("Portainer integration is not configured")
     client = portainer_client(cfg)
+    fallback_ip = docker_host_ip(cfg)
     try:
-        endpoint_id = int(cfg.get("endpoint_id") or 0)
+        only_endpoint = int(cfg.get("endpoint_id") or 0)
     except (TypeError, ValueError):
-        endpoint_id = 0
-    if not endpoint_id:
-        endpoint_id = await client.first_endpoint_id()
-    containers = await client.containers(endpoint_id)
-    host_ip = docker_host_ip(cfg)
-    for c in containers:
-        published = [p for p in c["ports"] if p.get("public")]
-        if published:
-            c["suggested_host"] = host_ip
-            c["suggested_port"] = published[0]["public"]
-        else:
-            c["suggested_host"] = next(iter(c["networks"].values()), None)
-            c["suggested_port"] = c["ports"][0]["private"] if c["ports"] else None
-        c["endpoint_id"] = endpoint_id
-    return containers
+        only_endpoint = 0
+
+    endpoints = await client.endpoints()
+    if only_endpoint:
+        endpoints = [e for e in endpoints if e.get("Id") == only_endpoint]
+    if not endpoints:
+        raise ValueError("No matching Portainer environments found")
+
+    out: list[dict] = []
+    for ep in endpoints:
+        host_ip = endpoint_host_ip(ep, fallback_ip)
+        try:
+            containers = await client.containers(ep["Id"])
+        except Exception as exc:
+            # One offline environment shouldn't blank the whole dropdown.
+            logger.warning("Portainer environment %s unreachable: %s", ep.get("Name"), exc)
+            continue
+        for c in containers:
+            c["endpoint_id"] = ep["Id"]
+            c["endpoint_name"] = ep.get("Name")
+            c["host_ip"] = host_ip
+            published = [p for p in c["ports"] if p.get("public")]
+            if published:
+                c["suggested_host"] = host_ip
+                c["suggested_port"] = published[0]["public"]
+            else:
+                c["suggested_host"] = next(iter(c["networks"].values()), None)
+                c["suggested_port"] = c["ports"][0]["private"] if c["ports"] else None
+        out.extend(containers)
+    out.sort(key=lambda c: c["name"].lower())
+    return out
 
 
 def match_container(containers: list[dict], forward_host: str,
-                    forward_port: int, host_ip: str | None) -> str | None:
-    """Best-effort guess of which container a forward target points at:
-    docker-host IP + published port, a container network IP, or the
-    container's name (NPM on the same Docker network resolves names)."""
+                    forward_port: int) -> dict | None:
+    """Best-effort guess of which container a forward target points at.
+    Containers carry their own environment's `host_ip`, so the strongest
+    signal is per-container: its Docker host's IP + a matching published
+    port. Then a container network IP, then the container's name (NPM on the
+    same Docker network resolves names)."""
     fh = str(forward_host or "").strip().lower()
     if not fh:
         return None
-    if host_ip and fh == host_ip.lower():
-        for c in containers:
-            if any(p.get("public") == forward_port for p in c["ports"]):
-                return c["name"]
-        return None  # it's the docker host, but no container publishes that port
+    for c in containers:
+        if (c.get("host_ip") or "").lower() == fh and \
+                any(p.get("public") == forward_port for p in c["ports"]):
+            return c
     for c in containers:
         if fh in (ip.lower() for ip in c["networks"].values()):
-            return c["name"]
+            return c
     for c in containers:
         if fh == c["name"].lower():
-            return c["name"]
+            return c
     return None
 
 
@@ -152,23 +173,13 @@ async def find_portainer_match(db: Session, forward_host: str,
                                forward_port: int) -> tuple[str | None, int | None]:
     """(container_name, endpoint_id) guess for a forward target — used by NPM
     import to auto-link. Best-effort: any Portainer hiccup returns no match."""
-    cfg = get_integration_config(db, "portainer")
-    if not integration_configured("portainer", cfg):
-        return None, None
     try:
-        client = portainer_client(cfg)
-        try:
-            endpoint_id = int(cfg.get("endpoint_id") or 0)
-        except (TypeError, ValueError):
-            endpoint_id = 0
-        if not endpoint_id:
-            endpoint_id = await client.first_endpoint_id()
-        containers = await client.containers(endpoint_id)
+        containers = await list_portainer_containers(db)
     except Exception as exc:
         logger.debug("Portainer match skipped: %s", exc)
         return None, None
-    name = match_container(containers, forward_host, forward_port, docker_host_ip(cfg))
-    return (name, endpoint_id) if name else (None, None)
+    c = match_container(containers, forward_host, forward_port)
+    return (c["name"], c["endpoint_id"]) if c else (None, None)
 
 
 def dns_record_plan(cfg: dict) -> tuple[str, str, int]:
@@ -339,15 +350,21 @@ async def provision_service(service_id: int, on_update=None) -> None:
         _in_flight.discard(service_id)
 
 
-async def import_npm_host(db: Session, npm_proxy_host_id: int) -> Service:
+async def import_npm_host(db: Session, npm_proxy_host_id: int,
+                          overrides: dict | None = None) -> Service:
     """Take an existing NPM proxy host under management as a Service row.
-    Adopts what's there rather than provisioning: the proxy step is marked ok,
-    DNS is assumed pre-existing (and `dns_record_type` stays NULL, so deleting
-    the service later won't touch a record we didn't create), and the cert
-    step reflects whether the host already has one. An HTTP-only host imports
-    at state=error with cert pending — Retry then issues the certificate.
+    `overrides` carries the user's edits from the import modal (name, forward
+    target, toggles, Portainer link) and wins over the host's current values;
+    the caller then runs the pipeline, whose sync step pushes any differences
+    back to NPM (and issues a cert if the host doesn't have one).
+
+    DNS is assumed pre-existing (`dns_record_type` stays NULL, so deleting
+    the service later won't touch a record we didn't create). The host's
+    pre-existing cert is honored but never owned (npm_certificate_id stays
+    NULL — it could be shared, e.g. a wildcard).
 
     Raises ValueError with a user-facing message on anything invalid."""
+    overrides = overrides or {}
     npm_cfg = get_integration_config(db, "npm")
     if not integration_configured("npm", npm_cfg):
         raise ValueError("Configure the Nginx Proxy Manager integration first")
@@ -370,29 +387,36 @@ async def import_npm_host(db: Session, npm_proxy_host_id: int) -> Service:
 
     extra = f" (+{len(domains) - 1} more domain(s) on the same host)" if len(domains) > 1 else ""
     has_cert = bool(host.get("certificate_id"))
-    # Best-effort Portainer auto-link by forward target (no-op if Portainer
-    # isn't configured or nothing matches).
-    container, endpoint_id = await find_portainer_match(
-        db, host.get("forward_host") or "", int(host.get("forward_port") or 0))
+
+    # Portainer link: an explicit choice from the modal (including "none")
+    # wins; otherwise best-effort auto-match by forward target.
+    if "portainer_container" in overrides:
+        container = (overrides.get("portainer_container") or "").strip() or None
+        endpoint_id = overrides.get("portainer_endpoint_id") if container else None
+    else:
+        container, endpoint_id = await find_portainer_match(
+            db, host.get("forward_host") or "", int(host.get("forward_port") or 0))
+
+    def pick(key: str, host_value):
+        return overrides[key] if key in overrides else host_value
+
     svc = Service(
-        name=subdomain,
+        name=(str(pick("name", "")).strip() or subdomain),
         subdomain=subdomain,
         domain=domain,
-        forward_scheme=host.get("forward_scheme") or "http",
-        forward_host=host.get("forward_host") or "",
-        forward_port=int(host.get("forward_port") or 80),
-        websockets=bool(host.get("allow_websocket_upgrade")),
-        block_exploits=bool(host.get("block_exploits")),
-        caching_enabled=bool(host.get("caching_enabled")),
-        ssl_forced=bool(host.get("ssl_forced")) if has_cert else True,
-        http2_support=bool(host.get("http2_support")) if has_cert else True,
-        hsts_enabled=bool(host.get("hsts_enabled")),
-        hsts_subdomains=bool(host.get("hsts_subdomains")),
+        forward_scheme=pick("forward_scheme", host.get("forward_scheme") or "http"),
+        forward_host=str(pick("forward_host", host.get("forward_host") or "")).strip(),
+        forward_port=int(pick("forward_port", host.get("forward_port") or 80)),
+        websockets=bool(pick("websockets", host.get("allow_websocket_upgrade"))),
+        block_exploits=bool(pick("block_exploits", host.get("block_exploits"))),
+        caching_enabled=bool(pick("caching_enabled", host.get("caching_enabled"))),
+        ssl_forced=bool(pick("ssl_forced", host.get("ssl_forced") if has_cert else True)),
+        http2_support=bool(pick("http2_support", host.get("http2_support") if has_cert else True)),
+        hsts_enabled=bool(pick("hsts_enabled", host.get("hsts_enabled"))),
+        hsts_subdomains=bool(pick("hsts_subdomains", host.get("hsts_subdomains"))),
         portainer_container=container,
         portainer_endpoint_id=endpoint_id,
         npm_proxy_host_id=npm_proxy_host_id,
-        # npm_certificate_id stays NULL: that field means "cert we created and
-        # may delete on cleanup" — a pre-existing cert can be shared.
         npm_status="ok",
         npm_detail=f"Imported existing proxy host #{npm_proxy_host_id}{extra}",
         dns_status="ok",
@@ -400,8 +424,8 @@ async def import_npm_host(db: Session, npm_proxy_host_id: int) -> Service:
         cert_status="ok" if has_cert else "pending",
         cert_detail=(f"Certificate #{host['certificate_id']} attached "
                      "(pre-existing, left alone on delete)") if has_cert
-                    else "No certificate attached — Retry to issue one",
-        state="active" if has_cert else "error",
+                    else "No certificate attached yet",
+        state="pending",
     )
     db.add(svc)
     db.commit()
