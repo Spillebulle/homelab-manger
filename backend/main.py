@@ -1309,6 +1309,51 @@ def list_services(db: Session = Depends(get_db)):
     return [_serialize_service(s) for s in rows]
 
 
+@api.get("/services/npm-hosts")
+async def list_npm_hosts(db: Session = Depends(get_db)):
+    """Live list of NPM proxy hosts, for the Services page's sync view. The
+    SPA matches them against managed services client-side (by stored proxy
+    host id or fqdn) so hosts created outside the app show up as importable."""
+    cfg = services_manager.get_integration_config(db, "npm")
+    if not services_manager.integration_configured("npm", cfg):
+        raise HTTPException(status_code=400, detail="NPM integration is not configured")
+    try:
+        hosts = await services_manager.npm_client(cfg).list_proxy_hosts()
+    except Exception as exc:
+        logger.warning("NPM host listing failed: %s", exc)
+        raise HTTPException(status_code=502, detail=str(exc))
+    return [
+        {
+            "id": h.get("id"),
+            "domain_names": h.get("domain_names") or [],
+            "forward_scheme": h.get("forward_scheme"),
+            "forward_host": h.get("forward_host"),
+            "forward_port": h.get("forward_port"),
+            "certificate_id": h.get("certificate_id") or 0,
+            "enabled": bool(h.get("enabled")),
+        }
+        for h in hosts
+    ]
+
+
+@api.post("/services/npm-import", status_code=201)
+async def import_npm_host(body: dict, db: Session = Depends(get_db)):
+    """Take an existing NPM proxy host under management. Body:
+    {"npm_proxy_host_id": <id>}."""
+    try:
+        host_id = int(body.get("npm_proxy_host_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="npm_proxy_host_id is required")
+    try:
+        svc = await services_manager.import_npm_host(db, host_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.warning("NPM host import failed: %s", exc)
+        raise HTTPException(status_code=502, detail=str(exc))
+    return _serialize_service(svc)
+
+
 @api.post("/services", status_code=201)
 async def create_service(body: ServiceCreate, db: Session = Depends(get_db)):
     npm_cfg = services_manager.get_integration_config(db, "npm")

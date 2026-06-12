@@ -259,6 +259,42 @@
               <p>No services yet. Click <strong class="text-gray-300">Add Service</strong> to publish your first app.</p>
             </div>
           </div>
+
+          <!-- NPM sync: proxy hosts that exist in NPM but aren't managed here -->
+          <div x-show="integrations.npm?.configured && (unmanagedNpmHosts.length || npmHostsError)" class="mt-8">
+            <div class="flex items-center gap-2 mb-3">
+              <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wide">
+                In Nginx Proxy Manager — not managed here
+              </h2>
+              <button @click="loadNpmHosts()" title="Refresh from NPM"
+                      class="text-gray-500 hover:text-gray-200 px-1.5 py-0.5 rounded hover:bg-card text-xs">
+                <i class="fa-solid fa-arrows-rotate"></i>
+              </button>
+            </div>
+            <div x-show="npmHostsError" class="text-xs text-red-300 bg-red-500/10 border border-red-500/30 rounded px-3 py-2 mb-3"
+                 x-text="'Could not list NPM proxy hosts: ' + npmHostsError"></div>
+            <div class="space-y-2">
+              <template x-for="h in unmanagedNpmHosts" :key="h.id">
+                <div class="bg-card/60 border border-border border-dashed rounded-lg p-3 flex items-center justify-between flex-wrap gap-3">
+                  <div class="min-w-0">
+                    <div class="text-sm text-gray-200 font-mono break-all" x-text="(h.domain_names || []).join(', ')"></div>
+                    <div class="text-xs text-gray-500 mt-0.5">
+                      <span class="font-mono" x-text="'→ ' + h.forward_scheme + '://' + h.forward_host + ':' + h.forward_port"></span>
+                      <span class="ml-2" :class="h.certificate_id ? 'text-green-400' : 'text-gray-500'">
+                        <i class="fa-solid" :class="h.certificate_id ? 'fa-lock' : 'fa-lock-open'"></i>
+                        <span x-text="h.certificate_id ? 'SSL' : 'HTTP only'"></span>
+                      </span>
+                      <span x-show="!h.enabled" class="ml-2 text-amber-400">disabled in NPM</span>
+                    </div>
+                  </div>
+                  <button @click="importNpmHost(h)" class="btn-secondary text-xs shrink-0"
+                          title="Manage this proxy host from here (existing config is kept)">
+                    <i class="fa-solid fa-file-import mr-1"></i>Import
+                  </button>
+                </div>
+              </template>
+            </div>
+          </div>
         </div>
       </template>
 
@@ -2205,6 +2241,8 @@
       // 'dashboard' (default) or 'services'.
       page: 'dashboard',
       services: [],
+      npmHosts: [],          // live NPM proxy-host list, for the sync section
+      npmHostsError: '',
       integrations: { npm: {}, namecheap: {} },
       serviceModal: { show: false, busy: false, error: '', form: {} },
       integrationsModal: { show: false, busy: false, npm: {}, namecheap: {}, npmTest: null, ncTest: null },
@@ -2438,6 +2476,44 @@
         this.page = 'services';
         await Promise.all([this.loadServices(), this.loadIntegrations()]);
         this._watchProvisioning();
+        this.loadNpmHosts();   // fire-and-forget; section fills in when it lands
+      },
+
+      async loadNpmHosts() {
+        if (!this.integrations.npm?.configured) { this.npmHosts = []; return; }
+        this.npmHostsError = '';
+        try {
+          const r = await fetch('/api/services/npm-hosts');
+          if (r.ok) { this.npmHosts = await r.json(); return; }
+          const d = await r.json().catch(() => ({}));
+          this.npmHostsError = d.detail || `HTTP ${r.status}`;
+        } catch (e) { this.npmHostsError = String(e); }
+      },
+
+      // NPM proxy hosts not yet managed here — matched by stored proxy-host id
+      // or by fqdn, so the section updates as services are created/deleted
+      // without refetching from NPM.
+      get unmanagedNpmHosts() {
+        const ids = new Set(this.services.map(s => s.npm_proxy_host_id).filter(Boolean));
+        const fqdns = new Set(this.services.map(s => s.fqdn));
+        return this.npmHosts.filter(h =>
+          !ids.has(h.id) &&
+          !(h.domain_names || []).some(d => fqdns.has(String(d).toLowerCase())));
+      },
+
+      async importNpmHost(h) {
+        const r = await fetch('/api/services/npm-import', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ npm_proxy_host_id: h.id }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (r.ok) {
+          this.showToast(`Imported ${d.fqdn}` + (d.state === 'error' ? ' — no certificate yet, hit Retry to issue one' : ''));
+          await this.loadServices();
+        } else {
+          this.showToast(d.detail || 'Import failed', 'error');
+        }
       },
 
       get integrationsReady() {
@@ -2553,6 +2629,7 @@
           const r = await fetch(`/api/services/${s.id}`, { method: 'DELETE' });
           if (r.ok) {
             await this.loadServices();
+            this.loadNpmHosts();  // the proxy host is gone remotely too — drop it from the sync section
             this.showToast('Service deleted');
             return;
           }
@@ -2561,7 +2638,7 @@
           // and leaves whatever's left for manual cleanup.
           this.confirm(`${d.detail || 'Cleanup failed'}\n\nDelete anyway? Leftovers in NPM/Namecheap will need manual cleanup.`, async () => {
             const r2 = await fetch(`/api/services/${s.id}?force=true`, { method: 'DELETE' });
-            if (r2.ok) { await this.loadServices(); this.showToast('Service deleted (some remote cleanup skipped)', 'warning'); }
+            if (r2.ok) { await this.loadServices(); this.loadNpmHosts(); this.showToast('Service deleted (some remote cleanup skipped)', 'warning'); }
             else { this.showToast('Failed to delete service', 'error'); }
           });
         });

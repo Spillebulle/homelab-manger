@@ -132,11 +132,15 @@ async def provision_service(service_id: int, on_update=None) -> None:
                     if existing:
                         svc.npm_proxy_host_id = existing["id"]
                         svc.npm_detail = f"Adopted existing proxy host #{existing['id']}"
-                        # The existing host may already carry a cert (manual setup).
+                        # The existing host may already carry a cert (manual
+                        # setup). Mark the step done but DON'T store the cert
+                        # id — npm_certificate_id is "cert we created and may
+                        # delete on cleanup", and a pre-existing cert can be
+                        # shared (e.g. a wildcard) with other proxy hosts.
                         if existing.get("certificate_id"):
-                            svc.npm_certificate_id = existing["certificate_id"]
                             svc.cert_status = "ok"
-                            svc.cert_detail = f"Certificate #{existing['certificate_id']} already attached"
+                            svc.cert_detail = (f"Certificate #{existing['certificate_id']} "
+                                               "already attached (pre-existing, left alone on delete)")
                     else:
                         created = await npm.create_proxy_host(
                             fqdn, svc.forward_scheme, svc.forward_host,
@@ -173,9 +177,7 @@ async def provision_service(service_id: int, on_update=None) -> None:
                                 await asyncio.sleep(_CERT_RETRY_DELAY)
                     if cert is None:
                         raise last_exc or NPMError("certificate creation failed")
-                await npm.attach_certificate(
-                    svc.npm_proxy_host_id, cert["id"], fqdn, svc.forward_scheme,
-                    svc.forward_host, svc.forward_port, bool(svc.websockets))
+                await npm.attach_certificate(svc.npm_proxy_host_id, cert["id"])
                 svc.npm_certificate_id = cert["id"]
                 svc.cert_status = "ok"
                 svc.cert_detail = f"Let's Encrypt certificate #{cert['id']} attached, HTTPS forced"
@@ -197,6 +199,65 @@ async def provision_service(service_id: int, on_update=None) -> None:
     finally:
         db.close()
         _in_flight.discard(service_id)
+
+
+async def import_npm_host(db: Session, npm_proxy_host_id: int) -> Service:
+    """Take an existing NPM proxy host under management as a Service row.
+    Adopts what's there rather than provisioning: the proxy step is marked ok,
+    DNS is assumed pre-existing (and `dns_record_type` stays NULL, so deleting
+    the service later won't touch a record we didn't create), and the cert
+    step reflects whether the host already has one. An HTTP-only host imports
+    at state=error with cert pending — Retry then issues the certificate.
+
+    Raises ValueError with a user-facing message on anything invalid."""
+    npm_cfg = get_integration_config(db, "npm")
+    if not integration_configured("npm", npm_cfg):
+        raise ValueError("Configure the Nginx Proxy Manager integration first")
+
+    if db.query(Service).filter(Service.npm_proxy_host_id == npm_proxy_host_id).first():
+        raise ValueError("That proxy host is already managed by a service")
+
+    host = await npm_client(npm_cfg).get_proxy_host(npm_proxy_host_id)
+    domains = host.get("domain_names") or []
+    if not domains:
+        raise ValueError("Proxy host has no domain names")
+    fqdn = str(domains[0]).lower()
+    if "." not in fqdn:
+        raise ValueError(f"Can't derive subdomain/domain from {fqdn!r}")
+    subdomain, domain = fqdn.split(".", 1)
+
+    if db.query(Service).filter(Service.subdomain == subdomain,
+                                Service.domain == domain).first():
+        raise ValueError(f"A service for {fqdn} already exists")
+
+    extra = f" (+{len(domains) - 1} more domain(s) on the same host)" if len(domains) > 1 else ""
+    has_cert = bool(host.get("certificate_id"))
+    svc = Service(
+        name=subdomain,
+        subdomain=subdomain,
+        domain=domain,
+        forward_scheme=host.get("forward_scheme") or "http",
+        forward_host=host.get("forward_host") or "",
+        forward_port=int(host.get("forward_port") or 80),
+        websockets=bool(host.get("allow_websocket_upgrade")),
+        npm_proxy_host_id=npm_proxy_host_id,
+        # npm_certificate_id stays NULL: that field means "cert we created and
+        # may delete on cleanup" — a pre-existing cert can be shared.
+        npm_status="ok",
+        npm_detail=f"Imported existing proxy host #{npm_proxy_host_id}{extra}",
+        dns_status="ok",
+        dns_detail="Pre-existing DNS (not created by this app — left alone on delete)",
+        cert_status="ok" if has_cert else "pending",
+        cert_detail=(f"Certificate #{host['certificate_id']} attached "
+                     "(pre-existing, left alone on delete)") if has_cert
+                    else "No certificate attached — Retry to issue one",
+        state="active" if has_cert else "error",
+    )
+    db.add(svc)
+    db.commit()
+    db.refresh(svc)
+    logger.info("SERVICE %s: imported from NPM proxy host #%d", fqdn, npm_proxy_host_id)
+    return svc
 
 
 async def deprovision_service(svc: Service, db: Session) -> list[str]:

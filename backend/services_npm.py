@@ -136,14 +136,33 @@ class NPMClient:
             "POST", "/nginx/proxy-hosts",
             self._proxy_host_payload(fqdn, scheme, host, port, websockets))
 
-    async def attach_certificate(self, proxy_host_id: int, certificate_id: int,
-                                 fqdn: str, scheme: str, host: str, port: int,
-                                 websockets: bool) -> dict:
-        """PUT the full payload back with the certificate enabled. NPM's PUT
-        merges, but sending the complete known-good shape avoids depending on
-        merge semantics across NPM versions."""
-        payload = self._proxy_host_payload(fqdn, scheme, host, port, websockets,
-                                           certificate_id=certificate_id)
+    async def get_proxy_host(self, proxy_host_id: int) -> dict:
+        return await self._request("GET", f"/nginx/proxy-hosts/{proxy_host_id}")
+
+    # The PUT-able subset of a proxy-host object. A GET response additionally
+    # carries read-only fields (id, created_on, owner, expanded certificate,
+    # nginx status in meta, …) that NPM's schema validation rejects on PUT.
+    _EDITABLE_HOST_KEYS = (
+        "domain_names", "forward_scheme", "forward_host", "forward_port",
+        "access_list_id", "certificate_id", "ssl_forced", "http2_support",
+        "hsts_enabled", "hsts_subdomains", "allow_websocket_upgrade",
+        "block_exploits", "caching_enabled", "advanced_config", "locations",
+        "enabled",
+    )
+    _EDITABLE_META_KEYS = ("letsencrypt_agree", "letsencrypt_email", "dns_challenge")
+
+    async def attach_certificate(self, proxy_host_id: int, certificate_id: int) -> dict:
+        """GET-modify-PUT: flip only the SSL fields and send everything else
+        back unchanged. Rebuilding the payload from scratch here would wipe
+        custom advanced_config / locations / access lists on hosts that were
+        adopted or imported rather than created by us."""
+        current = await self.get_proxy_host(proxy_host_id)
+        payload = {k: current[k] for k in self._EDITABLE_HOST_KEYS
+                   if k in current and current[k] is not None}
+        meta = current.get("meta") or {}
+        payload["meta"] = {k: meta[k] for k in self._EDITABLE_META_KEYS if k in meta}
+        payload.update({"certificate_id": certificate_id,
+                        "ssl_forced": True, "http2_support": True})
         return await self._request("PUT", f"/nginx/proxy-hosts/{proxy_host_id}", payload)
 
     async def delete_proxy_host(self, proxy_host_id: int) -> None:
