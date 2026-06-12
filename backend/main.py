@@ -1566,23 +1566,29 @@ async def reprovision_service(service_id: int, db: Session = Depends(get_db)):
 
 
 @api.delete("/services/{service_id}")
-async def delete_service(service_id: int, force: bool = False,
+async def delete_service(service_id: int, force: bool = False, unlink: bool = False,
                          db: Session = Depends(get_db)):
     """Deprovision (NPM proxy host + cert, then the exact DNS record we
     created) and delete the row. If remote cleanup fails the row is kept and
     a 502 explains what's left - `?force=true` deletes the row anyway,
-    leaving the remote leftovers for manual cleanup."""
+    leaving the remote leftovers for manual cleanup.
+
+    `?unlink=true` skips remote cleanup entirely: the service just stops
+    being managed here, and the DNS record, proxy host and certificate all
+    stay exactly as they are (the host reappears in the NPM sync section)."""
     svc = db.query(Service).filter(Service.id == service_id).first()
     if not svc:
         raise HTTPException(status_code=404, detail="Service not found")
     if services_manager.service_provisioning(service_id):
         raise HTTPException(status_code=409, detail="Wait for provisioning to finish first")
-    errors = await services_manager.deprovision_service(svc, db)
-    if errors and not force:
-        raise HTTPException(status_code=502, detail="Cleanup incomplete: " + "; ".join(errors))
+    errors: list[str] = []
+    if not unlink:
+        errors = await services_manager.deprovision_service(svc, db)
+        if errors and not force:
+            raise HTTPException(status_code=502, detail="Cleanup incomplete: " + "; ".join(errors))
     db.delete(svc)
     db.commit()
-    return {"ok": True, "cleanup_errors": errors}
+    return {"ok": True, "unlinked": unlink, "cleanup_errors": errors}
 
 
 app.include_router(api)

@@ -1965,12 +1965,19 @@
           and a Let's Encrypt certificate is issued if the host doesn't have one.
         </p>
       </div>
-      <div class="px-6 py-4 border-t border-border flex justify-end gap-2">
-        <button @click="serviceModal.show = false" class="btn-secondary">Cancel</button>
-        <button @click="saveService()" :disabled="serviceModal.busy" class="btn-primary disabled:opacity-50">
-          <i x-show="serviceModal.busy" class="fa-solid fa-circle-notch fa-spin mr-1"></i>
-          <span x-text="{ add: 'Create', edit: 'Save', import: 'Import' }[serviceModal.mode] || 'Create'"></span>
+      <div class="px-6 py-4 border-t border-border flex items-center justify-between gap-2">
+        <button x-show="serviceModal.mode === 'edit'" @click="unlinkService()"
+                title="Stop managing this service here. Nothing is removed: the DNS record, proxy host and certificate all stay."
+                class="text-gray-400 hover:text-gray-200 text-sm transition-colors">
+          <i class="fa-solid fa-link-slash mr-1"></i> Unlink
         </button>
+        <div class="flex gap-2 ml-auto">
+          <button @click="serviceModal.show = false" class="btn-secondary">Cancel</button>
+          <button @click="saveService()" :disabled="serviceModal.busy" class="btn-primary disabled:opacity-50">
+            <i x-show="serviceModal.busy" class="fa-solid fa-circle-notch fa-spin mr-1"></i>
+            <span x-text="{ add: 'Create', edit: 'Save', import: 'Import' }[serviceModal.mode] || 'Create'"></span>
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -2123,7 +2130,7 @@
       </div>
       <div class="px-6 py-4 border-t border-border flex justify-end gap-2">
         <button @click="integrationsModal.show = false" class="btn-secondary">Close</button>
-        <button @click="saveIntegrations()" :disabled="integrationsModal.busy" class="btn-primary disabled:opacity-50">
+        <button @click="saveIntegrations(true)" :disabled="integrationsModal.busy" class="btn-primary disabled:opacity-50">
           <i x-show="integrationsModal.busy" class="fa-solid fa-circle-notch fa-spin mr-1"></i>Save
         </button>
       </div>
@@ -2973,6 +2980,26 @@
         });
       },
 
+      // Stop managing a service WITHOUT touching anything remote: the DNS
+      // record, proxy host and certificate all stay; the host just reappears
+      // in the "not managed here" sync section.
+      unlinkService() {
+        const s = this.serviceModal.editing;
+        if (!s) return;
+        this.confirm(`Unlink "${s.name}"? It stops being managed here, but nothing is deleted: the DNS record, proxy host and certificate stay as they are.`, async () => {
+          const r = await fetch(`/api/services/${s.id}?unlink=true`, { method: 'DELETE' });
+          if (r.ok) {
+            this.serviceModal.show = false;
+            await this.loadServices();
+            this.loadNpmHosts();  // it's unmanaged again - show it in the sync section
+            this.showToast('Service unlinked - nothing was deleted');
+          } else {
+            const d = await r.json().catch(() => ({}));
+            this.showToast(d.detail || 'Failed to unlink', 'error');
+          }
+        });
+      },
+
       async openIntegrationsModal() {
         await this.loadIntegrations();
         // Editable copies; secrets come back blanked and blank means "keep".
@@ -2987,7 +3014,10 @@
         };
       },
 
-      async saveIntegrations() {
+      // closeOnSuccess: true from the Save button (modal closes when all
+      // saves succeed), false/omitted from the Test buttons (they save
+      // first but the user is mid-testing, so the modal stays open).
+      async saveIntegrations(closeOnSuccess = false) {
         this.integrationsModal.busy = true;
         try {
           const save = (name, cfg) => fetch(`/api/integrations/${name}`, {
@@ -3003,6 +3033,7 @@
           if (results.every(r => r.ok)) {
             this.showToast('Integration settings saved');
             await this.loadIntegrations();
+            if (closeOnSuccess) this.integrationsModal.show = false;
           } else {
             this.showToast('Failed to save integration settings', 'error');
           }
