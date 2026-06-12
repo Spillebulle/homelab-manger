@@ -1268,6 +1268,9 @@ async def test_integration(name: str, db: Session = Depends(get_db)):
         hosts = (await services_manager.nc_client(cfg).get_hosts(cfg["domain"]))["hosts"]
         return {"ok": True, "detail": f"Connected — {len(hosts)} DNS record(s) on {cfg['domain']}"}
     except Exception as exc:
+        # The detail reaches the UI's test-result box, but log it too so the
+        # server log explains its own 502 lines.
+        logger.warning("Integration test failed (%s): %s", name, exc)
         raise HTTPException(status_code=502, detail=str(exc))
 
 
