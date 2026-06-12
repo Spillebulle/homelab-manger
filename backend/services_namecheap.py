@@ -128,7 +128,7 @@ class NamecheapClient:
             raise NamecheapError("Namecheap setHosts did not report success")
 
     async def ensure_record(self, domain: str, host: str, rtype: str, address: str,
-                            ttl: int = 300) -> str:
+                            ttl: int = 1799) -> str:
         """Idempotent add. Returns 'created' or 'exists'. Refuses (raises) on
         conflicts rather than overwriting - a same-name record pointing
         somewhere else is the user's to resolve, not ours to clobber."""

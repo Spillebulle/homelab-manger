@@ -195,13 +195,15 @@ async def find_portainer_match(db: Session, forward_host: str,
 def dns_record_plan(cfg: dict) -> tuple[str, str, int]:
     """(record_type, target, ttl) for new DNS records. Default: CNAME to the
     domain root - the root already resolves to the public IP, so every new
-    subdomain follows it automatically (including if the IP ever changes)."""
+    subdomain follows it automatically (including if the IP ever changes).
+    Default TTL is 1799, which Namecheap's UI displays as "Automatic" (the
+    API has no real automatic value; 1799 is what the UI writes for it)."""
     rtype = (cfg.get("record_type") or "CNAME").strip().upper()
     target = str(cfg.get("record_target") or "").strip() or cfg["domain"]
     try:
-        ttl = max(60, int(cfg.get("ttl") or 300))
+        ttl = max(60, int(cfg.get("ttl") or 1799))
     except (TypeError, ValueError):
-        ttl = 300
+        ttl = 1799
     return rtype, target, ttl
 
 

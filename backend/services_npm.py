@@ -204,6 +204,12 @@ class NPMClient:
         return None
 
     async def create_certificate(self, fqdn: str, le_email: str) -> dict:
+        # NPM 2.11+ validates this meta as a oneOf: the HTTP-01 variant allows
+        # ONLY letsencrypt_email + letsencrypt_agree (additionalProperties
+        # false), the DNS variant requires dns_provider fields. Sending
+        # `dns_challenge: false` fails BOTH branches with the cryptic
+        # "data/meta must NOT have additional properties" (twice, once per
+        # branch) - so don't add keys here.
         return await self._request(
             "POST", "/nginx/certificates",
             {
@@ -212,7 +218,6 @@ class NPMClient:
                 "meta": {
                     "letsencrypt_email": le_email,
                     "letsencrypt_agree": True,
-                    "dns_challenge": False,
                 },
             },
             timeout=_CERT_TIMEOUT,
