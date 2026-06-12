@@ -204,9 +204,17 @@
             <input x-model="serviceFilter" class="input w-full max-w-sm" placeholder="Filter services…">
           </div>
 
-          <!-- Service list - compact one-line rows -->
-          <div class="space-y-1.5">
-            <template x-for="s in filteredServices" :key="s.id">
+          <!-- Service list - compact one-line rows, grouped by forward host -->
+          <div>
+            <template x-for="g in serviceGroups" :key="g.key">
+              <div class="mb-4">
+                <div class="px-1 pb-1.5 text-xs text-gray-500 uppercase tracking-wider flex items-center gap-2">
+                  <i class="fa-solid fa-server"></i>
+                  <span x-text="g.label"></span>
+                  <span class="text-gray-600" x-text="g.items.length"></span>
+                </div>
+                <div class="space-y-1.5">
+            <template x-for="s in g.items" :key="s.id">
               <div class="bg-card border border-border rounded-lg px-3 py-2">
                 <div class="flex items-center gap-3 flex-wrap">
                   <!-- state dot -->
@@ -221,8 +229,9 @@
                   <a :href="s.url" target="_blank" rel="noopener"
                      class="text-xs text-blue-400 hover:text-blue-300 font-mono truncate min-w-0 flex-1"
                      x-text="s.fqdn" :title="s.url"></a>
+                  <!-- host is the group header; only the port matters per row -->
                   <span class="text-xs text-gray-500 font-mono shrink-0 hidden md:inline"
-                        x-text="'→ ' + s.forward_host + ':' + s.forward_port"
+                        x-text="'→ :' + s.forward_port"
                         :title="s.forward_scheme + '://' + s.forward_host + ':' + s.forward_port"></span>
 
                   <!-- linked container state -->
@@ -267,6 +276,9 @@
                 <!-- error detail, only when something failed -->
                 <div x-show="firstServiceError(s)" class="mt-1 ml-6 text-xs text-red-300 break-words"
                      x-text="firstServiceError(s)"></div>
+              </div>
+            </template>
+                </div>
               </div>
             </template>
             <div x-show="!services.length" class="text-center text-gray-500 py-16">
@@ -2655,6 +2667,26 @@
           (s.fqdn || '').toLowerCase().includes(q) ||
           (s.forward_host || '').toLowerCase().includes(q) ||
           (s.portainer_container || '').toLowerCase().includes(q));
+      },
+
+      // Services grouped by the host they forward to. When a Portainer
+      // environment's host IP matches, the group is labelled with the
+      // environment name ("nas - 192.168.1.20"); otherwise just the host.
+      get serviceGroups() {
+        const groups = new Map();
+        for (const s of this.filteredServices) {
+          const key = (s.forward_host || 'unknown').toLowerCase();
+          if (!groups.has(key)) {
+            const env = this.containers.find(c => (c.host_ip || '').toLowerCase() === key);
+            groups.set(key, {
+              key,
+              label: env?.endpoint_name ? `${env.endpoint_name} - ${s.forward_host}` : (s.forward_host || 'unknown'),
+              items: [],
+            });
+          }
+          groups.get(key).items.push(s);
+        }
+        return [...groups.values()].sort((a, b) => a.label.localeCompare(b.label));
       },
 
       async loadContainers() {
