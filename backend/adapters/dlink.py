@@ -1,5 +1,5 @@
 """
-D-Link adapter — extends generic SNMP with:
+D-Link adapter - extends generic SNMP with:
   - D-Link private MIB for per-port PoE power consumption (DGS-3120 series)
   - Entity MIB (RFC 4133) to filter virtual interfaces and detect combo ports
   - SSH interactive shell for configuration commands
@@ -19,7 +19,7 @@ _DLINK_POE_VOLTAGE    = "1.3.6.1.4.1.171.12.18.2.1.1.13"  # millivolts
 _DLINK_POE_CURRENT    = "1.3.6.1.4.1.171.12.18.2.1.1.14"  # milliamps
 _DLINK_POE_MAX_POWER  = "1.3.6.1.4.1.171.12.18.2.1.1.8"   # max milliwatts configured
 
-# D-Link private environment MIB — current chassis temperature in °C, indexed
+# D-Link private environment MIB - current chassis temperature in °C, indexed
 # per stack unit (swDevEnvTemperatureCurrent). The standard ENTITY-SENSOR-MIB
 # (1.3.6.1.2.1.99) is EMPTY on DGS-3120 R4.x, so this is the only temperature
 # source. Confirmed on a real DGS-3120-48PC (col .2 = current, .3 = high
@@ -28,7 +28,7 @@ _DLINK_POE_MAX_POWER  = "1.3.6.1.4.1.171.12.18.2.1.1.8"   # max milliwatts confi
 # consumption), only PoE delivered and this temperature.
 _DLINK_TEMP_CURRENT   = "1.3.6.1.4.1.171.12.11.1.8.1.2"
 
-# Entity MIB — entPhysicalName. DGS-3120 firmware names physical ports "Port N",
+# Entity MIB - entPhysicalName. DGS-3120 firmware names physical ports "Port N",
 # including SFP cages with no module inserted (which are absent from IF-MIB).
 _ENT_PHYSICAL_NAME    = "1.3.6.1.2.1.47.1.1.1.1.7"
 _PORT_NAME_RE         = re.compile(r"^Port\s+(\d+)$")
@@ -36,7 +36,7 @@ _PORT_NAME_RE         = re.compile(r"^Port\s+(\d+)$")
 # DGS-3120 ifDescr format: "D-Link DGS-3120-48PC R4.00.015 Port 1 on Unit 1"
 _IFDESCR_PORT_RE      = re.compile(r"\bPort\s+(\d+)\b(?:\s+on\s+Unit\s+(\d+))?")
 
-# DGS-3120 firmware lies about ipAddressOrigin via SNMP — it always returns 2
+# DGS-3120 firmware lies about ipAddressOrigin via SNMP - it always returns 2
 # (manual) regardless of how the address was actually acquired. The CLI's
 # `show ipif` output ("IPv4 Address: 192.168.0.16/24 (DHCP)") is authoritative.
 _IPIF_DHCP_RE = re.compile(r"IPv4\s+Address\s*:\s*\S+\s*\((DHCP|Manual)\)", re.IGNORECASE)
@@ -113,7 +113,7 @@ class DLinkAdapter(SNMPAdapter):
 
     async def _status(self) -> dict:
         base = await super()._status()
-        # Override SNMP-derived ipOrigin via CLI — this firmware reports the
+        # Override SNMP-derived ipOrigin via CLI - this firmware reports the
         # SNMP field as "manual" even for DHCP-acquired addresses. CLI is
         # authoritative. Best-effort: any SSH failure leaves the SNMP value.
         if not base.get("online"):
@@ -134,7 +134,7 @@ class DLinkAdapter(SNMPAdapter):
 
     async def _temperature(self) -> int | None:
         """Hottest current unit temperature in °C from the D-Link private env
-        MIB. Indexed per stack unit; we report the max. Best-effort — returns
+        MIB. Indexed per stack unit; we report the max. Best-effort - returns
         None on any SNMP failure or if the table is empty."""
         try:
             rows = await _walk(self.hostname, self.community, _DLINK_TEMP_CURRENT, self.port)
@@ -163,7 +163,7 @@ class DLinkAdapter(SNMPAdapter):
             return ports
 
         # Count "Port N" occurrences in Entity MIB. Combo ports (RJ45 + SFP
-        # cage sharing the same logical port number) appear twice — once for
+        # cage sharing the same logical port number) appear twice - once for
         # each physical media. A standalone count of 1 means non-combo or a
         # stacking-slot entry; we keep the former (it intersects with IF-MIB)
         # and drop the latter (no IF-MIB sibling).
@@ -237,7 +237,7 @@ class DLinkAdapter(SNMPAdapter):
             return {}
         # If SSH succeeded but the response carries no port lines, the firmware
         # may have changed `show poe` formatting or PoE itself is disabled on
-        # the chassis. Either way the user sees "PoE info gone" — log so we can
+        # the chassis. Either way the user sees "PoE info gone" - log so we can
         # tell it apart from the SSH-down case (which is logged in _cli_many).
 
         # DGS-3120 ends each line with `\n\r` (LF before CR). Python's splitlines
@@ -346,7 +346,7 @@ class DLinkAdapter(SNMPAdapter):
             })
             for p in untagged:
                 # CLI port "1:5" → ifIndex "5" on a single-unit DGS-3120. For
-                # stacked units the mapping isn't 1:1 — revisit when we have
+                # stacked units the mapping isn't 1:1 - revisit when we have
                 # one to test against.
                 if ":" in p:
                     unit, port_n = p.split(":", 1)
@@ -358,7 +358,7 @@ class DLinkAdapter(SNMPAdapter):
 
     @staticmethod
     def _expand_port_range(s: str) -> list[str]:
-        """Expand 'Static Untagged Ports' style strings — e.g.
+        """Expand 'Static Untagged Ports' style strings - e.g.
         '1:1-1:24,1:30,1:40-1:48' → ['1:1', '1:2', ..., '1:24', '1:30', '1:40', ..., '1:48']."""
         s = s.strip()
         if not s:
@@ -386,7 +386,7 @@ class DLinkAdapter(SNMPAdapter):
     # A port spec is interpolated raw into an SSH CLI command, so it must not
     # carry shell/command metacharacters. Legitimate DGS-3120 specs are bare
     # ifIndex (`5`), unit:port (`1:5`), ranges (`1-48`, `1:1-1:48`) and
-    # comma-lists — all covered by digits, colon, hyphen, comma. The UI only
+    # comma-lists - all covered by digits, colon, hyphen, comma. The UI only
     # ever sends numeric ports; this guards the API-key path against injection.
     _PORT_SPEC_RE = re.compile(r"^[0-9:,\-]{1,40}$")
 
@@ -436,8 +436,8 @@ class DLinkAdapter(SNMPAdapter):
         return await super().execute_action(action)
 
     async def _vlan_batch(self, action: dict) -> dict:
-        """Apply a batch of VLAN edits — VLAN creates, port-membership changes,
-        VLAN deletes — in one SSH session. Order is fixed inside this method
+        """Apply a batch of VLAN edits - VLAN creates, port-membership changes,
+        VLAN deletes - in one SSH session. Order is fixed inside this method
         (creates → membership changes → deletes → save) and overrides whatever
         the caller passed; the order matters because the switch:
           - rejects member-add commands targeting a not-yet-created VID,
@@ -629,7 +629,7 @@ class DLinkAdapter(SNMPAdapter):
         """Promote a Fail! line in the CLI output to a structured error so
         the frontend can show the actual switch message instead of having to
         eyeball the raw stdout. DGS-3120 prints the error reason on a line
-        *before* Fail!, separated by a blank line — walk backwards from Fail!
+        *before* Fail!, separated by a blank line - walk backwards from Fail!
         to find the first non-empty line."""
         if "error" in result:
             return result
@@ -715,7 +715,7 @@ class DLinkAdapter(SNMPAdapter):
                 # category lost coverage instead of a bare "no acceptable
                 # kex algorithm" error.
                 logger.info(
-                    "DLink SSH algos to %s — kex=%s ciphers=%s macs=%s host_keys=%s",
+                    "DLink SSH algos to %s - kex=%s ciphers=%s macs=%s host_keys=%s",
                     self.hostname,
                     list(opts.kex), list(opts.ciphers),
                     list(opts.digests), list(getattr(opts, host_key_attr)),

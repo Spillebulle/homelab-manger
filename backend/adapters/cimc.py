@@ -33,7 +33,7 @@ def _legacy_ssl_context() -> ssl.SSLContext:
 
 
 class CIMCAdapter(BaseAdapter):
-    # 2.0(9f) XMLAPI adminPower has no GracefulShutdown equivalent — only a
+    # 2.0(9f) XMLAPI adminPower has no GracefulShutdown equivalent - only a
     # forced power-down. CIMCRedfishAdapter (3.0+) overrides this to add
     # graceful_shutdown.
     SHUTDOWN_ACTIONS = ["power_off"]
@@ -43,7 +43,7 @@ class CIMCAdapter(BaseAdapter):
             "service": "HTTPS (XMLAPI)",
             "transport": "xmlapi",
             "port": 443,
-            "description": "NuovaAPI for inventory and power actions — required",
+            "description": "NuovaAPI for inventory and power actions - required",
             "required": True,
         },
         {
@@ -64,7 +64,7 @@ class CIMCAdapter(BaseAdapter):
             "service": "KVM viewer",
             "transport": "tcp",
             "port": 2068,
-            "description": "Java KVM session port — the client (your browser host) needs to reach this, not the homelab-manger server",
+            "description": "Java KVM session port - the client (your browser host) needs to reach this, not the homelab-manger server",
             "required": False,
         },
     ]
@@ -88,7 +88,7 @@ class CIMCAdapter(BaseAdapter):
         self.url      = f"https://{hostname}:{self.port}/nuova"
         self._cookie: str | None = None
         self._ssl_ctx = _legacy_ssl_context()
-        # IPMI SDR walk cached per adapter instance — `_sensors` and `_power`
+        # IPMI SDR walk cached per adapter instance - `_sensors` and `_power`
         # both consume it, no point paying ~25s subprocess + retry twice.
         self._ipmi_walked: bool = False
         self._ipmi_readings: list[dict] | None = None
@@ -102,7 +102,7 @@ class CIMCAdapter(BaseAdapter):
     # CIMC's XML backend periodically replies with "XML API backend server
     # communication failed. Internal error, please retry." Its message tells
     # us to retry, and that's safe for *post-login* calls where we already
-    # hold a cookie. We do **not** retry aaaLogin itself — empirically each
+    # hold a cookie. We do **not** retry aaaLogin itself - empirically each
     # failed login still consumes one of CIMC's 4 concurrent-session slots,
     # so retrying burns through the cap in a single poll.
     _TRANSIENT_ERROR_FRAGMENTS = ("xml api backend",)
@@ -111,7 +111,7 @@ class CIMCAdapter(BaseAdapter):
         async with httpx.AsyncClient(verify=self._ssl_ctx, timeout=15) as c:
             r = await c.post(self.url, content=body, headers={"Content-Type": "application/xml"})
             # Tag transport/HTTP errors with host context before they bubble up
-            # — bare `raise_for_status` produces a one-liner with the URL but
+            # - bare `raise_for_status` produces a one-liner with the URL but
             # nothing about which device adapter it came from in our logs.
             try:
                 r.raise_for_status()
@@ -125,7 +125,7 @@ class CIMCAdapter(BaseAdapter):
 
     async def _post_xml(self, body: str) -> ET.Element:
         """POST with retry on transient backend errors. Caller must already
-        hold a cookie — DO NOT use this for aaaLogin (see _login)."""
+        hold a cookie - DO NOT use this for aaaLogin (see _login)."""
         delay = 0.5
         root: ET.Element | None = None
         for attempt in range(3):
@@ -169,13 +169,13 @@ class CIMCAdapter(BaseAdapter):
 
     # ── SSH-based session reaper ──────────────────────────────────────────────
 
-    # Block header: "ID 401:" — output of `show user-session detail` at the
+    # Block header: "ID 401:" - output of `show user-session detail` at the
     # top-level prompt. The block then carries indented "Type: xmlapi" / "CLI"
     # lines until the next ID block (or EOF).
     _CIMC_SESSION_ID_RE = re.compile(r"^\s*ID\s+(\d+)\s*:\s*$")
     _CIMC_TYPE_RE       = re.compile(r"^\s*Type\s*:\s*(\S+)", re.IGNORECASE)
     # Trailing prompt (e.g. "lin-pancake-01-management# "). We wait for this to
-    # show up before sending commands — CIMC's SSH sometimes opens the channel
+    # show up before sending commands - CIMC's SSH sometimes opens the channel
     # before the prompt is printed and an early `send` gets dropped.
     _CIMC_PROMPT_RE     = re.compile(r"#\s*$")
 
@@ -184,12 +184,12 @@ class CIMCAdapter(BaseAdapter):
         count cleared. Returns -1 on SSH error (no creds, refused, auth, etc.).
         Used as recovery when XMLAPI login hits 'Max sessions'.
 
-        Command flow (CIMC 2.0(9f) — `scope user-mgmt` does *not* exist on
+        Command flow (CIMC 2.0(9f) - `scope user-mgmt` does *not* exist on
         this firmware):
             show user-session detail        → enumerate sessions
             scope user-session <id>; terminate  → kill one (must `top` between IDs)
 
-        Reuses the BMC's username/password by default — homelab CIMCs share
+        Reuses the BMC's username/password by default - homelab CIMCs share
         one local admin account between XMLAPI and CLI. Override per-device
         with credentials keys ssh_username / ssh_password / ssh_port."""
         username = self.credentials.get("ssh_username") or self.username
@@ -219,7 +219,7 @@ class CIMCAdapter(BaseAdapter):
                 elif (time.time() - last) * 1000 >= quiet_ms:
                     if not wait_for_prompt:
                         break
-                    # Still waiting on prompt — keep going until hard_ms.
+                    # Still waiting on prompt - keep going until hard_ms.
                     time.sleep(0.05)
                 else:
                     time.sleep(0.05)
@@ -237,7 +237,7 @@ class CIMCAdapter(BaseAdapter):
                 channel = transport.open_session()
                 channel.get_pty(term="vt100", width=200, height=2000)
                 channel.invoke_shell()
-                # CIMC sometimes returns an empty initial buffer — wait for
+                # CIMC sometimes returns an empty initial buffer - wait for
                 # the prompt explicitly so the next `send` doesn't race.
                 _drain(channel, quiet_ms=400, hard_ms=8000, wait_for_prompt=True)
 
@@ -281,7 +281,7 @@ class CIMCAdapter(BaseAdapter):
                 # caller treats it as best-effort), but the operator needs
                 # to see *why* the reaper is failing so they can fix it.
                 logger.warning(
-                    "CIMC SSH session reaper failed against %s:%s — %s: %s",
+                    "CIMC SSH session reaper failed against %s:%s - %s: %s",
                     self.hostname, ssh_port, type(exc).__name__, exc,
                 )
                 return -1
@@ -564,7 +564,7 @@ class CIMCAdapter(BaseAdapter):
         telemetry isn't wired through), and `computeMbTempStats` only exposes
         CPU temps. IPMI's full SDR adds fan RPMs, PSU/inlet/exhaust temps,
         voltages, and currents. Falls back to a reshaped XMLAPI view if
-        IPMI-over-LAN is disabled or pyghmi isn't installed — the user still
+        IPMI-over-LAN is disabled or pyghmi isn't installed - the user still
         sees CPU temps and fan presence/state, just no RPMs."""
         ipmi, ipmi_err = await self._sensors_via_ipmi()
         if ipmi is not None:
@@ -577,7 +577,7 @@ class CIMCAdapter(BaseAdapter):
     # Inline script for the IPMI subprocess. We run pyghmi in a *subprocess*
     # rather than `run_in_executor` because pyghmi spawns a daemon keepalive
     # thread for its RMCP+ session, and that thread doesn't play well with
-    # asyncio's ThreadPoolExecutor — every other call dies mid-SDR-walk with
+    # asyncio's ThreadPoolExecutor - every other call dies mid-SDR-walk with
     # `IpmiException: Session no longer connected`. A subprocess gives pyghmi
     # its own clean process with its own event loop and exits cleanly.
     # `Session no longer connected` shows up mid-walk if the BMC is under
@@ -616,7 +616,7 @@ print(json.dumps({"ok": False, "error": last_err or "unknown", "tb": last_tb or 
         the readings; one walk per poll cycle is enough.
 
         Use stdlib subprocess inside run_in_executor rather than asyncio's
-        create_subprocess_exec — on Windows the ProactorEventLoop's pipe
+        create_subprocess_exec - on Windows the ProactorEventLoop's pipe
         inheritance breaks pyghmi's RMCP+ session reliably with `Session no
         longer connected` mid-walk, even though the same subprocess command
         invoked synchronously works perfectly. stdlib `subprocess.run` does
@@ -790,7 +790,7 @@ print(json.dumps({"ok": False, "error": last_err or "unknown", "tb": last_tb or 
         Why we delegate JNLP construction to CIMC instead of building it
         locally: the `com.cisco.kvm.KVMLaunch` argument list and `kvm.jar`
         path differ across firmware revisions. CIMC knows its own format;
-        we don't have to track it. The endpoint is unauthenticated — the
+        we don't have to track it. The endpoint is unauthenticated - the
         tokens themselves are the auth, so a query-string GET is enough."""
         await self._login()
         root = await self._post_xml(f'<aaaGetComputeAuthTokens cookie="{self._cookie}"/>')

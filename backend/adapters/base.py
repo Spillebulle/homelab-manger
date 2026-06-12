@@ -5,19 +5,19 @@ from typing import Any
 
 
 # Shape of a single entry in BaseAdapter.REQUIREMENTS / a preflight result.
-# Keep this informal — duck-typed dicts are easier to render in the SPA than
+# Keep this informal - duck-typed dicts are easier to render in the SPA than
 # Pydantic models, and the data crosses the wire as JSON anyway.
 #
 # Required keys:
-#   service      str   — display name, e.g. "SNMPv2c", "SSH", "HTTPS (Redfish)"
-#   transport    str   — "tcp" | "udp" | "snmp" | "snmpv3" | "redfish" | "xmlapi"
+#   service      str   - display name, e.g. "SNMPv2c", "SSH", "HTTPS (Redfish)"
+#   transport    str   - "tcp" | "udp" | "snmp" | "snmpv3" | "redfish" | "xmlapi"
 #                        Drives which preflight test runs. New transports
 #                        need a branch in BaseAdapter.preflight.
-#   port         int   — TCP/UDP port to test. Adapters that take a configurable
+#   port         int   - TCP/UDP port to test. Adapters that take a configurable
 #                        port should derive this from credentials at instance
 #                        time and override `requirements()`.
-#   description  str   — Why this service matters; surfaced in the tooltip.
-#   required     bool  — If False, a failed test renders as a warning, not an
+#   description  str   - Why this service matters; surfaced in the tooltip.
+#   required     bool  - If False, a failed test renders as a warning, not an
 #                        error. Use False for optional services the adapter
 #                        falls back away from (e.g. CIMC SSH reaper, iBMC SNMP
 #                        enrichment).
@@ -30,7 +30,7 @@ class BaseAdapter(ABC):
 
     # Shutdown-style actions this adapter's execute_action actually supports,
     # used by the UPS outage-orchestration UI to only offer real options (and
-    # to exclude devices that can't be powered off — e.g. L2 switches — as
+    # to exclude devices that can't be powered off - e.g. L2 switches - as
     # shutdown targets). Subset of {"graceful_shutdown", "power_off"}. Default
     # none; servers with a BMC override it.
     SHUTDOWN_ACTIONS: list[str] = []
@@ -76,14 +76,14 @@ class BaseAdapter(ABC):
         """Run each requirement and return one result per service.
 
         Each result merges the requirement dict with:
-          ok      bool — true if the test passed
-          detail  str  — short human-readable explanation (failure reason or
+          ok      bool - true if the test passed
+          detail  str  - short human-readable explanation (failure reason or
                          "connected", "responded", etc.)
-          skipped bool — present and True if the test was not run (e.g. UDP
+          skipped bool - present and True if the test was not run (e.g. UDP
                          probe with no app-layer protocol available)
 
         Override per adapter when a deeper check is materially better than
-        the generic TCP/SNMP probe — e.g. CIMC's `aaaLogin` is the only way
+        the generic TCP/SNMP probe - e.g. CIMC's `aaaLogin` is the only way
         to distinguish "BMC up" from "BMC up and XMLAPI working"."""
         results: list[dict] = []
         for req in self.requirements():
@@ -93,7 +93,7 @@ class BaseAdapter(ABC):
     async def _run_one_preflight(self, req: dict) -> dict:
         """Dispatch a single requirement to its test by transport. Catches
         all exceptions so one failing probe doesn't tank the rest of the
-        report — the UI needs the full grid to point at the right fix."""
+        report - the UI needs the full grid to point at the right fix."""
         transport = (req.get("transport") or "").lower()
         try:
             if transport == "tcp":
@@ -101,10 +101,10 @@ class BaseAdapter(ABC):
             elif transport in ("udp", "ipmi"):
                 # Pure UDP reachability isn't testable without an app-layer
                 # protocol (no SYN/ACK handshake to wait for). Mark as
-                # "unverified" rather than guessing — the SPA renders that
+                # "unverified" rather than guessing - the SPA renders that
                 # state distinct from pass/fail.
                 return {**req, "ok": None, "skipped": True,
-                        "detail": "UDP — reachability not testable without app protocol"}
+                        "detail": "UDP - reachability not testable without app protocol"}
             elif transport in ("snmp", "snmpv2", "snmpv2c"):
                 ok, detail = await self._probe_snmp_v2(req)
             elif transport == "snmpv3":
@@ -125,7 +125,7 @@ class BaseAdapter(ABC):
     # ── Generic probes ───────────────────────────────────────────────────────
 
     async def _probe_tcp(self, port: int, timeout: float = 3.0) -> tuple[bool, str]:
-        """Try a TCP connect — fastest is-it-up check. Doesn't validate auth
+        """Try a TCP connect - fastest is-it-up check. Doesn't validate auth
         or protocol; that's the job of higher-level probes."""
         def _connect() -> tuple[bool, str]:
             try:
@@ -134,7 +134,7 @@ class BaseAdapter(ABC):
             except (socket.timeout, TimeoutError):
                 return False, f"TCP connect to :{port} timed out after {timeout:.0f}s"
             except ConnectionRefusedError:
-                return False, f"TCP connect to :{port} refused — service not listening"
+                return False, f"TCP connect to :{port} refused - service not listening"
             except OSError as exc:
                 return False, f"TCP connect to :{port} failed: {exc}"
         loop = asyncio.get_running_loop()
@@ -143,13 +143,13 @@ class BaseAdapter(ABC):
     async def _probe_http(self, req: dict) -> tuple[bool, str]:
         """TCP-only probe for plain-HTTP services. We don't issue a real GET
         because some smart-managed devices (HPE 1820) return 404 for `/` and
-        require the user to be on a login page — that's a false negative for
+        require the user to be on a login page - that's a false negative for
         "is the web UI reachable?"."""
         return await self._probe_tcp(int(req["port"]))
 
     async def _probe_snmp_v2(self, req: dict) -> tuple[bool, str]:
         """Real SNMP get of sysName. Verifies host reachability AND community
-        validity in one round trip — the most useful single check.
+        validity in one round trip - the most useful single check.
 
         Some agents (e.g. HPE OfficeConnect 1820 with default configuration)
         do not populate `sysName` and return an empty string. That isn't a
@@ -168,13 +168,13 @@ class BaseAdapter(ABC):
                 timeout=4.0,
             )
         except asyncio.TimeoutError:
-            return False, "SNMP get sysName timed out — host unreachable or community rejected"
+            return False, "SNMP get sysName timed out - host unreachable or community rejected"
         except Exception as exc:
             return False, f"SNMP error: {type(exc).__name__}: {exc}"
         if val is None:
-            return False, "SNMP returned no value — host unreachable or community rejected"
+            return False, "SNMP returned no value - host unreachable or community rejected"
         if val == b"" or val == "":
-            return True, "SNMP responded (sysName not configured on device — community accepted)"
+            return True, "SNMP responded (sysName not configured on device - community accepted)"
         return True, f"SNMP responded: sysName={val!s}"
 
     async def _probe_snmp_v3(self, req: dict) -> tuple[bool, str]:
@@ -182,7 +182,7 @@ class BaseAdapter(ABC):
         try:
             from pysnmp.hlapi.v3arch import asyncio as ps
         except Exception:
-            return False, "pysnmp not installed — cannot test SNMPv3"
+            return False, "pysnmp not installed - cannot test SNMPv3"
         user      = self.credentials.get("snmp_user") or self.credentials.get("username")
         auth_pass = self.credentials.get("snmp_auth_pass") or self.credentials.get("password")
         priv_pass = self.credentials.get("snmp_priv_pass") or self.credentials.get("password")
@@ -228,13 +228,13 @@ class BaseAdapter(ABC):
                                          auth=(username, password)) as c:
                 r = await c.get(url)
         except httpx.TimeoutException:
-            return False, f"Redfish GET / timed out — BMC unreachable on :{port}"
+            return False, f"Redfish GET / timed out - BMC unreachable on :{port}"
         except httpx.HTTPError as exc:
             return False, f"Redfish transport error: {exc}"
         # Some Redfish stacks (iBMC) reject Basic and only allow session auth;
         # surface that explicitly so the user knows the BMC is reachable.
         if r.status_code == 401:
-            return False, "Redfish reachable but auth rejected (HTTP 401) — wrong creds, or BMC requires session-token (try anyway, the adapter will fall back)"
+            return False, "Redfish reachable but auth rejected (HTTP 401) - wrong creds, or BMC requires session-token (try anyway, the adapter will fall back)"
         if r.status_code >= 400:
             return False, f"Redfish returned HTTP {r.status_code}"
         return True, "Redfish service root reachable"
@@ -250,7 +250,7 @@ class BaseAdapter(ABC):
         password = self.credentials.get("password") or ""
         if not username:
             return False, "no CIMC username configured"
-        # Reuse the legacy SSL context — 2.0(9f) ships a 1024-bit RSA cert
+        # Reuse the legacy SSL context - 2.0(9f) ships a 1024-bit RSA cert
         # that modern OpenSSL refuses under default SECLEVEL.
         from .cimc import _legacy_ssl_context
         ctx = _legacy_ssl_context()

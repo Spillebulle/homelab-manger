@@ -1,5 +1,5 @@
 """
-Generic USB-connected UPS adapter — reads a UPS over the standard USB HID
+Generic USB-connected UPS adapter - reads a UPS over the standard USB HID
 Power Device Class (USB-IF "Usage Tables for HID Power Devices" 1.0), the same
 layer NUT's `usbhid-ups` driver sits on. This replaces the need to run NUT for
 any UPS that speaks standard HID PDC (APC, CyberPower, Eaton, Tripp Lite, most
@@ -11,18 +11,18 @@ RemainingCapacity vs RunTimeToEmpty vs PercentLoad varies per model and
 firmware. Rather than pin to one device's layout, `parse_report_descriptor`
 walks the HID report descriptor the device advertises and builds a usage→field
 map. We then look up fields by their canonical (page<<16 | selector) usage code
-— so the *same* code works across every standard-HID UPS without per-model
+- so the *same* code works across every standard-HID UPS without per-model
 tables. The usage codes below are NUT's `usage_lkp` values (the implementation
 known to read the BlueWalker VI-2200-SH this was first built for).
 
 What is NOT covered: "megatec/Voltronic/Q*" serial-over-USB UPSs (NUT's
-`nutdrv_qx`/`blazer_usb`). Those are not HID Power Devices at all — they're a
+`nutdrv_qx`/`blazer_usb`). Those are not HID Power Devices at all - they're a
 USB-serial bridge you send `Q1\r` query strings to. A separate adapter would be
 needed; this one will simply find no Power Device usage page and report that.
 
 Hardware access: the UPS must be USB-passed-through to the container
 (`docker run --device=/dev/bus/usb/... ` or the bus/dev pair, plus the process
-needs permission to open the hidraw node — root in the container, or a udev
+needs permission to open the hidraw node - root in the container, or a udev
 rule on the host). See the Dockerfile and CLAUDE.md.
 """
 import asyncio
@@ -64,7 +64,7 @@ def _iter_usb_sysfs_dirs(vid: int, pid: int):
 def _usb_disable_autosuspend(vid: int, pid: int) -> None:
     """Best-effort: pin the device's runtime PM to 'on' so the kernel never
     USB-autosuspends it. Cheap UPS HID interfaces frequently fail to resume
-    from autosuspend and then stop answering until re-plugged — the textbook
+    from autosuspend and then stop answering until re-plugged - the textbook
     "works, then goes offline while idle" failure. Writing `on` to the device's
     `power/control` is the standard NUT-era fix. Silent no-op if sysfs is
     read-only or the device isn't present (we re-apply every poll, so it also
@@ -82,7 +82,7 @@ def _usb_reset_by_id(vid: int, pid: int) -> bool:
 
     Cheap UPS USB stacks (Phoenixtec/Voltronic) periodically wedge under
     continuous polling and stop accepting `open`. A bus-level reset forces the
-    device to re-initialise — the same recovery NUT relies on. Returns True if
+    device to re-initialise - the same recovery NUT relies on. Returns True if
     a reset ioctl was issued. Fully guarded: any failure (not Linux, no usbfs
     access, device not present) just returns False so the caller falls back to
     plain retries. Requires the container to see /dev/bus/usb (bind-mount, not
@@ -107,7 +107,7 @@ def _usb_reset_by_id(vid: int, pid: int) -> bool:
         try:
             fd = os.open(node, os.O_WRONLY)
         except OSError as exc:
-            logger.warning("USB reset: cannot open %s (%s) — is /dev/bus/usb "
+            logger.warning("USB reset: cannot open %s (%s) - is /dev/bus/usb "
                            "bind-mounted with device-cgroup access?", node, exc)
             return False
         try:
@@ -126,7 +126,7 @@ def _usb_reset_by_id(vid: int, pid: int) -> bool:
 
 def _usb_environment(vid: int, pid: int) -> dict:
     """Report what the *container* can actually see for vid:pid, without going
-    through hidapi — so we can tell apart "node missing", "hidraw not live", and
+    through hidapi - so we can tell apart "node missing", "hidraw not live", and
     "permission" failures. The reset path proves usbfs (/dev/bus/usb) is live;
     if hidapi still can't open, this shows whether its hidraw node is present."""
     info: dict = {"platform": sys.platform, "hidapi_version": None,
@@ -184,17 +184,17 @@ def _usb_environment(vid: int, pid: int) -> dict:
 
 # The hidraw node is effectively single-open. Each poll cycle builds a fresh
 # adapter instance, so a per-instance lock can't serialize a scheduled poll
-# against a manual refresh or the /usb-diagnostics endpoint — they'd open the
+# against a manual refresh or the /usb-diagnostics endpoint - they'd open the
 # device concurrently and one gets EBUSY ("No USB HID Power Device found").
 # This process-wide lock serialises every USB session across all instances.
 _USB_LOCK = threading.Lock()
 
 # The HID report descriptor is static per device, so parse it once per
-# (vid, pid) and reuse — steady-state polls then issue only the GET_REPORT
+# (vid, pid) and reuse - steady-state polls then issue only the GET_REPORT
 # value reads (fewer USB transfers, fewer chances for a transient read error).
 _FIELDS_CACHE: dict[tuple[int, int], list] = {}
 
-# A USBDEVFS_RESET forces re-enumeration, so it must be RARE — issuing one
+# A USBDEVFS_RESET forces re-enumeration, so it must be RARE - issuing one
 # every failed poll (~30s) is a reset storm that never lets the device settle
 # and churns its devnum. Cap to one reset per device per cooldown window.
 _RESET_COOLDOWN = 300  # seconds
@@ -203,7 +203,7 @@ _LAST_USB_RESET: dict[tuple[int, int], float] = {}
 # ── Canonical HID Power Device usage codes (page << 16 | selector) ────────────
 # Values from NUT's drivers/usbhid-ups.c `usage_lkp[]`. Do NOT swap these for
 # the numbers some online "usb hid usage" tables list (e.g. PercentLoad 0x45,
-# RemainingCapacity 0x86) — those tables are wrong for the PDC spec; NUT's are
+# RemainingCapacity 0x86) - those tables are wrong for the PDC spec; NUT's are
 # the ones that actually decode real UPS hardware.
 PAGE_POWER   = 0x84
 PAGE_BATTERY = 0x85
@@ -218,7 +218,7 @@ U_PERCENT_LOAD     = 0x00840035   # % of rated load
 U_TEMPERATURE      = 0x00840036
 U_CONFIG_VOLTAGE   = 0x00840040
 U_CONFIG_ACTIVE_PW = 0x00840044   # ConfigActivePower = rated real power (W).
-#                                   NB: 0x43 is ConfigApparentPower (VA) — a
+#                                   NB: 0x43 is ConfigApparentPower (VA) - a
 #                                   different thing; don't use it for watts.
 
 U_REMAINING_CAP    = 0x00850066   # battery charge %
@@ -288,7 +288,7 @@ def parse_report_descriptor(desc: bytes) -> list[HidField]:
     """Walk a raw HID report descriptor and return one HidField per scalar
     item in every Input/Output/Feature main item. This is a deliberately small
     HID parser: it tracks just the global/local item state needed to assign
-    usages to bit ranges. Long items (0xFE) are skipped — no UPS uses them."""
+    usages to bit ranges. Long items (0xFE) are skipped - no UPS uses them."""
     fields: list[HidField] = []
 
     # Global item state (persists across main items; Push/Pop save/restore it).
@@ -301,7 +301,7 @@ def parse_report_descriptor(desc: bytes) -> list[HidField]:
     usages: list[int] = []
     usage_min = usage_max = None
 
-    # Bit cursor per (report_id, report_type) — each report type has its own
+    # Bit cursor per (report_id, report_type) - each report type has its own
     # packing; the report-id byte itself is not counted (offsets are within the
     # data payload).
     bitpos: dict[tuple[int, str], int] = {}
@@ -315,7 +315,7 @@ def parse_report_descriptor(desc: bytes) -> list[HidField]:
     while i < n:
         prefix = desc[i]
         i += 1
-        if prefix == 0xFE:   # long item — skip it entirely
+        if prefix == 0xFE:   # long item - skip it entirely
             if i < n:
                 size = desc[i]
                 i += 2 + size
@@ -324,7 +324,7 @@ def parse_report_descriptor(desc: bytes) -> list[HidField]:
         size = (1, 2, 4)[size_code - 1] if size_code else 0
         # Item tag = prefix with the 2 size bits cleared. The canonical tag
         # constants (0x04 Usage Page, 0x74 Report Size, 0x80 Input, …) already
-        # encode the type bits, so matching on `prefix & 0xFC` is correct —
+        # encode the type bits, so matching on `prefix & 0xFC` is correct -
         # masking the high nibble alone would drop the type bits and misfile
         # every global/local item.
         tag = prefix & 0xFC
@@ -342,10 +342,10 @@ def parse_report_descriptor(desc: bytes) -> list[HidField]:
             count = g["report_count"]
             rsize = g["report_size"]
             # We deliberately do NOT skip Constant (bit 0) fields. Real UPS
-            # firmwares — PowerWalker/Phoenixtec among them — mark live data
+            # firmwares - PowerWalker/Phoenixtec among them - mark live data
             # (RemainingCapacity, RunTimeToEmpty, PercentLoad) as Constant; NUT
             # reads them regardless. Genuine padding carries no Usage, so it
-            # maps to usage 0 and the usage lookups ignore it — but it still
+            # maps to usage 0 and the usage lookups ignore it - but it still
             # advances the bit cursor so following fields land at the right
             # offset.
             for idx in range(count):
@@ -419,7 +419,7 @@ class USBUPSAdapter(BaseAdapter):
             "service": "Container USB access",
             "transport": "docker",
             "port": 0,
-            "description": "Bind-mount the WHOLE host /dev — not just /dev/bus/usb: "
+            "description": "Bind-mount the WHOLE host /dev - not just /dev/bus/usb: "
                            "-v /dev:/dev:ro   (read-only is fine), plus --privileged. "
                            "hidapi reads the UPS via its /dev/hidrawN node, and a UPS "
                            "re-enumerates to a NEW hidraw node over time; a "
@@ -537,7 +537,7 @@ class USBUPSAdapter(BaseAdapter):
             raise RuntimeError(
                 f"UPS {self.vid:04x}:{self.pid:04x} is present on the host USB bus but "
                 "its device node can't be opened from the container. The container "
-                "isn't seeing the (re-enumerated) /dev/bus/usb node — pass USB through "
+                "isn't seeing the (re-enumerated) /dev/bus/usb node - pass USB through "
                 "with a BIND MOUNT: -v /dev/bus/usb:/dev/bus/usb plus "
                 "--device-cgroup-rule='c 189:* rmw' (or --privileged), NOT --device, so "
                 f"new devnums stay visible. Last error: {last_exc}")
@@ -560,17 +560,17 @@ class USBUPSAdapter(BaseAdapter):
             import hid  # cython-hidapi; imported lazily so the app still boots
         except ImportError as exc:        # without libhidapi (e.g. on a dev box)
             raise RuntimeError(
-                "hidapi not installed — `pip install hidapi` and ensure "
+                "hidapi not installed - `pip install hidapi` and ensure "
                 "libhidapi is present (apt: libhidapi-libusb0).") from exc
 
-        # Keep the kernel from autosuspending the UPS between polls — these HID
+        # Keep the kernel from autosuspending the UPS between polls - these HID
         # stacks often don't wake again. Cheap idempotent sysfs write; re-applied
         # each poll so it also re-covers a device that just re-enumerated.
         _usb_disable_autosuspend(self.vid, self.pid)
 
         # Serialise the whole open→read→close against any other USB session
         # (poll vs refresh vs diagnostics) and retry a few times to ride out a
-        # transient EBUSY on open OR a transient read error mid-cycle — hidraw
+        # transient EBUSY on open OR a transient read error mid-cycle - hidraw
         # GET_REPORT calls occasionally fail and shouldn't surface as the
         # device "going offline". The retry covers BOTH open and read; an
         # earlier version only retried the open, so a read hiccup propagated
@@ -585,7 +585,7 @@ class USBUPSAdapter(BaseAdapter):
                 except Exception as exc:
                     last_exc = exc
                     # `dev is None` ⇒ the OPEN failed (vs a mid-read error). If
-                    # opens keep failing the device is likely wedged — issue a
+                    # opens keep failing the device is likely wedged - issue a
                     # USB reset to kick it back, but only once per cooldown so
                     # we don't storm it (a reset re-enumerates the device, so
                     # doing it every poll churns the devnum and never recovers).
@@ -595,7 +595,7 @@ class USBUPSAdapter(BaseAdapter):
                             and now - _LAST_USB_RESET.get(key, -1e9) >= _RESET_COOLDOWN
                             and _usb_reset_by_id(self.vid, self.pid)):
                         _LAST_USB_RESET[key] = now
-                        logger.warning("USB UPS unresponsive — issued USBDEVFS_RESET on "
+                        logger.warning("USB UPS unresponsive - issued USBDEVFS_RESET on "
                                        "%04x:%04x (rate-limited to once / %ds)",
                                        self.vid, self.pid, _RESET_COOLDOWN)
                         time.sleep(1.5)
@@ -612,7 +612,7 @@ class USBUPSAdapter(BaseAdapter):
     def _read_from_device(self, dev, vid, pid) -> dict:
         """Read every interesting usage from an already-open hid.device. Split
         out from _read_all_sync so diagnostics can reuse the same open handle
-        (hidraw is exclusive on Linux — re-opening mid-call would fail)."""
+        (hidraw is exclusive on Linux - re-opening mid-call would fail)."""
         # Static descriptor → parse once per (vid,pid), then reuse.
         fields = _FIELDS_CACHE.get((vid, pid))
         if fields is None:
@@ -675,7 +675,7 @@ class USBUPSAdapter(BaseAdapter):
             # dimensionless / seconds per the PDC spec, so their raw logical
             # value IS the human value. PowerWalker/Phoenixtec firmwares emit
             # bogus POSITIVE exponents (observed: exp 7 on voltage → ×10^7), so
-            # we clamp to <= 0 — a well-behaved UPS using exp -1 (raw 2300 →
+            # we clamp to <= 0 - a well-behaved UPS using exp -1 (raw 2300 →
             # 230.0 V) still scales correctly, while the bogus +7 is ignored.
             if physical and f.unit_exp < 0:
                 return round(raw * (10 ** f.unit_exp), 3)
@@ -743,11 +743,11 @@ class USBUPSAdapter(BaseAdapter):
                or (charge is not None and charge <= self.low_charge_pct)
                or (runtime is not None and runtime <= self.low_runtime_sec))
         if on_battery and low:
-            return "low_battery", "On Battery — LOW"
+            return "low_battery", "On Battery - LOW"
         if on_battery:
             return "on_battery", "On Battery"
         if r.get("charging"):
-            return "online", "Online — Charging"
+            return "online", "Online - Charging"
         return "online", "Online"
 
     @staticmethod
@@ -820,7 +820,7 @@ class USBUPSAdapter(BaseAdapter):
         if reading.get("runtime_sec") is not None:
             bits.append(f"runtime {int(reading['runtime_sec'])}s")
         detail = ("UPS responded over USB HID ("
-                  + (", ".join(bits) if bits else "no standard usages decoded — "
+                  + (", ".join(bits) if bits else "no standard usages decoded - "
                      "may be a megatec/serial UPS")
                   + ")")
         ok = bool(bits)
@@ -833,20 +833,20 @@ class USBUPSAdapter(BaseAdapter):
         """Dump the raw HID report descriptor + every decoded usage and its
         current value. The web UI / a curious operator uses this to confirm a
         *new* UPS model is covered (or see exactly which usages are missing)
-        without reading code — the USB analogue of the snmp-walk endpoint."""
+        without reading code - the USB analogue of the snmp-walk endpoint."""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._diagnostics_sync)
 
     def _diagnostics_sync(self) -> dict:
         # The environment probe never opens via hidapi, so it works even when
-        # the device won't open — that's exactly the case we're debugging.
+        # the device won't open - that's exactly the case we're debugging.
         out = {"environment": _usb_environment(self.vid, self.pid)}
         try:
             import hid
         except Exception as exc:
             out["open_error"] = f"hidapi import failed: {exc}"
             return out
-        # Same process-wide lock as _read_all_sync — a diagnostics call must not
+        # Same process-wide lock as _read_all_sync - a diagnostics call must not
         # open the device while a poll holds it (that EBUSY was what made the
         # device "disappear" mid-test).
         try:
@@ -890,7 +890,7 @@ class USBUPSAdapter(BaseAdapter):
 
 
 def dev_get_string(dev, method_name: str):
-    """Call a hidapi string accessor defensively — some backends raise instead
+    """Call a hidapi string accessor defensively - some backends raise instead
     of returning '' when the descriptor lacks the string."""
     try:
         s = getattr(dev, method_name)()

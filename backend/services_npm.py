@@ -3,11 +3,11 @@
 This is the same API NPM's own web UI uses (there is no separate "public"
 API): authenticate with the admin email/password at POST /api/tokens, then
 send the JWT as a Bearer token. Instances are short-lived (one per request /
-provisioning run), so token expiry (default 1 day) isn't handled — a fresh
+provisioning run), so token expiry (default 1 day) isn't handled - a fresh
 client gets a fresh token.
 
 Certificate creation (`create_certificate`) blocks server-side while NPM runs
-certbot's HTTP-01 challenge — typically 15-60 s — hence the long per-call
+certbot's HTTP-01 challenge - typically 15-60 s - hence the long per-call
 timeout. A failure there usually means the DNS record hasn't propagated to
 Namecheap's authoritative servers yet or port 80 isn't reachable from the
 internet; the provisioning pipeline retries with a delay for the former.
@@ -89,7 +89,7 @@ class NPMClient:
         """Login + list proxy hosts. The cheapest call that proves both the
         credentials and the API path are right."""
         hosts = await self.list_proxy_hosts()
-        return {"ok": True, "detail": f"Connected — {len(hosts)} proxy host(s) configured"}
+        return {"ok": True, "detail": f"Connected - {len(hosts)} proxy host(s) configured"}
 
     # ── proxy hosts ───────────────────────────────────────────────────────
 
@@ -97,7 +97,7 @@ class NPMClient:
         return await self._request("GET", "/nginx/proxy-hosts") or []
 
     async def find_proxy_host(self, fqdn: str) -> dict | None:
-        """Find an existing proxy host serving `fqdn` — used to adopt a host
+        """Find an existing proxy host serving `fqdn` - used to adopt a host
         left over from a partially-failed earlier provisioning run instead of
         erroring on the duplicate-domain conflict NPM would raise."""
         for h in await self.list_proxy_hosts():
@@ -108,10 +108,10 @@ class NPMClient:
     async def create_proxy_host(self, fqdn: str, scheme: str, host: str, port: int,
                                 opts: dict | None = None) -> dict:
         """Create the proxy host WITHOUT a certificate (SSL fields stay off
-        regardless of `opts` until a cert exists — NPM rejects ssl_forced with
+        regardless of `opts` until a cert exists - NPM rejects ssl_forced with
         certificate_id 0). SSL is attached as a separate step so a slow/failed
         Let's Encrypt issuance doesn't take the whole proxy host down with
-        it — HTTP keeps working and the cert step can be retried. `opts` holds
+        it - HTTP keeps working and the cert step can be retried. `opts` holds
         the non-SSL toggles: allow_websocket_upgrade / block_exploits /
         caching_enabled."""
         opts = opts or {}
@@ -184,7 +184,7 @@ class NPMClient:
         try:
             await self._request("DELETE", f"/nginx/proxy-hosts/{proxy_host_id}")
         except NPMError as exc:
-            # Already gone is fine — cleanup is idempotent.
+            # Already gone is fine - cleanup is idempotent.
             if "404" in str(exc):
                 return
             raise
@@ -196,7 +196,7 @@ class NPMClient:
 
     async def find_certificate(self, fqdn: str) -> dict | None:
         """An existing Let's Encrypt cert covering exactly this fqdn (adopt
-        instead of re-issuing — LE rate-limits duplicate certificates)."""
+        instead of re-issuing - LE rate-limits duplicate certificates)."""
         for cert in await self.list_certificates():
             if cert.get("provider") == "letsencrypt" and \
                     fqdn in (cert.get("domain_names") or []):

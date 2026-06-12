@@ -4,12 +4,12 @@
 returns immediately; the SPA follows progress via the `service_updated`
 WebSocket broadcasts and polling). Each step commits its own status so a
 crash mid-pipeline leaves an accurate partial state, and re-running skips
-steps already marked `ok` — retry is just "run it again".
+steps already marked `ok` - retry is just "run it again".
 
 Step order matters: the DNS record must exist before the certificate step,
 because NPM's Let's Encrypt HTTP-01 challenge requires the fqdn to resolve
 publicly. The proxy host is created WITHOUT a cert first, then the cert is
-issued and attached — so a failed/slow issuance leaves a working HTTP proxy
+issued and attached - so a failed/slow issuance leaves a working HTTP proxy
 behind instead of nothing. Cert issuance is retried a few times with a delay
 to ride out DNS propagation to Namecheap's authoritative servers (usually
 seconds, occasionally a minute or two).
@@ -23,7 +23,9 @@ from .database import SessionLocal
 from .models import Integration, Service
 from .services_namecheap import NamecheapClient
 from .services_npm import NPMClient, NPMError
-from .services_portainer import PortainerClient, endpoint_host_ip, host_from_url
+from .services_portainer import (
+    PortainerClient, endpoint_host_ip, host_from_url, looks_like_ip,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +43,7 @@ _CERT_ATTEMPTS = 3
 _CERT_RETRY_DELAY = 25  # seconds between Let's Encrypt attempts (DNS propagation)
 
 # Guards against double-provisioning the same service (e.g. create + an
-# impatient retry click). In-memory is fine — single process.
+# impatient retry click). In-memory is fine - single process.
 _in_flight: set[int] = set()
 
 
@@ -69,10 +71,18 @@ def portainer_client(cfg: dict) -> PortainerClient:
 
 
 def docker_host_ip(cfg: dict) -> str | None:
-    """The LAN address NPM should forward to for containers with published
-    ports. Explicit `docker_host_ip` config wins; otherwise the Portainer
-    URL's host (Portainer usually runs on the Docker host itself)."""
-    return str(cfg.get("docker_host_ip") or "").strip() or host_from_url(cfg.get("base_url", ""))
+    """The LAN address NPM should forward to for containers on the LOCAL
+    (socket) Portainer environment. Portainer's API doesn't expose the host
+    machine's LAN IP, so the explicit `docker_host_ip` config is the source
+    of truth. Fallback to the Portainer URL's host only when that host is an
+    IP literal: a hostname there (reverse-proxied Portainer, mDNS name) is
+    usually NOT what NPM should forward to, and a wrong suggestion is worse
+    than none."""
+    explicit = str(cfg.get("docker_host_ip") or "").strip()
+    if explicit:
+        return explicit
+    url_host = host_from_url(cfg.get("base_url", ""))
+    return url_host if looks_like_ip(url_host) else None
 
 
 # NPM toggle groups, derived from the service row. SSL toggles are only
@@ -100,7 +110,7 @@ def _ssl_opts(svc: Service) -> dict:
 async def list_portainer_containers(db: Session) -> list[dict]:
     """Containers across ALL Portainer environments (or just the configured
     `endpoint_id` when set), each annotated with its environment and that
-    environment's Docker-host IP (from the endpoint's own URL — agent
+    environment's Docker-host IP (from the endpoint's own URL - agent
     endpoints run on different machines). Suggested forward target per
     container: the endpoint's host IP + first published port when ports are
     published, else the container's first network IP + first exposed port
@@ -171,7 +181,7 @@ def match_container(containers: list[dict], forward_host: str,
 
 async def find_portainer_match(db: Session, forward_host: str,
                                forward_port: int) -> tuple[str | None, int | None]:
-    """(container_name, endpoint_id) guess for a forward target — used by NPM
+    """(container_name, endpoint_id) guess for a forward target - used by NPM
     import to auto-link. Best-effort: any Portainer hiccup returns no match."""
     try:
         containers = await list_portainer_containers(db)
@@ -184,7 +194,7 @@ async def find_portainer_match(db: Session, forward_host: str,
 
 def dns_record_plan(cfg: dict) -> tuple[str, str, int]:
     """(record_type, target, ttl) for new DNS records. Default: CNAME to the
-    domain root — the root already resolves to the public IP, so every new
+    domain root - the root already resolves to the public IP, so every new
     subdomain follows it automatically (including if the IP ever changes)."""
     rtype = (cfg.get("record_type") or "CNAME").strip().upper()
     target = str(cfg.get("record_target") or "").strip() or cfg["domain"]
@@ -261,7 +271,7 @@ async def provision_service(service_id: int, on_update=None) -> None:
                         "forward_port": int(svc.forward_port),
                         **_npm_opts(svc),
                     }
-                    # SSL toggles only once a cert is attached — NPM rejects
+                    # SSL toggles only once a cert is attached - NPM rejects
                     # ssl_forced on a cert-less host. domain_names are NOT
                     # synced here (imported hosts may serve extra domains;
                     # renames handle domains in the PUT handler).
@@ -273,7 +283,7 @@ async def provision_service(service_id: int, on_update=None) -> None:
                     except NPMError as exc:
                         if "404" not in str(exc):
                             raise
-                        # Host was deleted behind our back — recreate below.
+                        # Host was deleted behind our back - recreate below.
                         svc.npm_proxy_host_id = None
                 if svc.npm_proxy_host_id is None:
                     existing = await npm.find_proxy_host(fqdn)
@@ -282,7 +292,7 @@ async def provision_service(service_id: int, on_update=None) -> None:
                         svc.npm_detail = f"Adopted existing proxy host #{existing['id']}"
                         # The existing host may already carry a cert (manual
                         # setup). Mark the step done but DON'T store the cert
-                        # id — npm_certificate_id is "cert we created and may
+                        # id - npm_certificate_id is "cert we created and may
                         # delete on cleanup", and a pre-existing cert can be
                         # shared (e.g. a wildcard) with other proxy hosts.
                         if existing.get("certificate_id"):
@@ -340,7 +350,7 @@ async def provision_service(service_id: int, on_update=None) -> None:
                   and svc.cert_status == "ok")
         svc.state = "active" if all_ok else "error"
         db.commit()
-        logger.info("SERVICE %s: provisioning finished — %s (dns=%s npm=%s cert=%s)",
+        logger.info("SERVICE %s: provisioning finished - %s (dns=%s npm=%s cert=%s)",
                     fqdn, svc.state, svc.dns_status, svc.npm_status, svc.cert_status)
         await _broadcast(on_update, service_id)
     except Exception:
@@ -361,7 +371,7 @@ async def import_npm_host(db: Session, npm_proxy_host_id: int,
     DNS is assumed pre-existing (`dns_record_type` stays NULL, so deleting
     the service later won't touch a record we didn't create). The host's
     pre-existing cert is honored but never owned (npm_certificate_id stays
-    NULL — it could be shared, e.g. a wildcard).
+    NULL - it could be shared, e.g. a wildcard).
 
     Raises ValueError with a user-facing message on anything invalid."""
     overrides = overrides or {}
@@ -420,7 +430,7 @@ async def import_npm_host(db: Session, npm_proxy_host_id: int,
         npm_status="ok",
         npm_detail=f"Imported existing proxy host #{npm_proxy_host_id}{extra}",
         dns_status="ok",
-        dns_detail="Pre-existing DNS (not created by this app — left alone on delete)",
+        dns_detail="Pre-existing DNS (not created by this app - left alone on delete)",
         cert_status="ok" if has_cert else "pending",
         cert_detail=(f"Certificate #{host['certificate_id']} attached "
                      "(pre-existing, left alone on delete)") if has_cert
@@ -436,7 +446,7 @@ async def import_npm_host(db: Session, npm_proxy_host_id: int,
 
 async def deprovision_service(svc: Service, db: Session) -> list[str]:
     """Best-effort cleanup of everything provisioning created: proxy host,
-    certificate, DNS record (only the exact record we wrote — type + target
+    certificate, DNS record (only the exact record we wrote - type + target
     were snapshotted on the row at provision time). Returns a list of
     human-readable errors; empty means everything that existed was removed."""
     errors: list[str] = []
@@ -456,7 +466,7 @@ async def deprovision_service(svc: Service, db: Session) -> list[str]:
                 except Exception as exc:
                     errors.append(f"NPM certificate #{svc.npm_certificate_id}: {exc}")
         else:
-            errors.append("NPM integration not configured — proxy host left in place")
+            errors.append("NPM integration not configured - proxy host left in place")
 
     if svc.dns_status == "ok" and svc.dns_record_type:
         if integration_configured("namecheap", nc_cfg):
@@ -467,6 +477,6 @@ async def deprovision_service(svc: Service, db: Session) -> list[str]:
             except Exception as exc:
                 errors.append(f"Namecheap DNS record: {exc}")
         else:
-            errors.append("Namecheap integration not configured — DNS record left in place")
+            errors.append("Namecheap integration not configured - DNS record left in place")
 
     return errors

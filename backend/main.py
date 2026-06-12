@@ -48,8 +48,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Quiet the chatty third-party loggers. At INFO they drown the log: httpx emits a
-# line per Redfish/Discord request (and that includes the full webhook URL — a
-# secret — in plaintext), and paramiko logs every SSH connect/auth. Our own
+# line per Redfish/Discord request (and that includes the full webhook URL - a
+# secret - in plaintext), and paramiko logs every SSH connect/auth. Our own
 # loggers stay at INFO so device-poll warnings and events remain visible.
 for _noisy in ("httpx", "httpcore", "paramiko", "paramiko.transport", "urllib3", "pysnmp"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
@@ -58,7 +58,7 @@ for _noisy in ("httpx", "httpcore", "paramiko", "paramiko.transport", "urllib3",
 
 class ConnectionManager:
     # Per-connection send timeout. If a client's socket buffer is wedged we
-    # don't want a poll-cycle broadcast to hang the event loop waiting on it —
+    # don't want a poll-cycle broadcast to hang the event loop waiting on it -
     # drop the slow client instead.
     _SEND_TIMEOUT_SECONDS = 5.0
 
@@ -84,11 +84,11 @@ class ConnectionManager:
                     timeout=self._SEND_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
-                logger.warning("WebSocket send timed out after %.1fs — dropping client",
+                logger.warning("WebSocket send timed out after %.1fs - dropping client",
                                self._SEND_TIMEOUT_SECONDS)
                 self.disconnect(connection)
             except Exception as exc:
-                logger.debug("WebSocket send failed (%s) — dropping client", exc)
+                logger.debug("WebSocket send failed (%s) - dropping client", exc)
                 self.disconnect(connection)
 
 manager = ConnectionManager()
@@ -99,7 +99,7 @@ manager = ConnectionManager()
 async def lifespan(app: FastAPI):
     init_db()
     bootstrap_admin()
-    # Non-blocking — if IEEE is unreachable, startup proceeds against the
+    # Non-blocking - if IEEE is unreachable, startup proceeds against the
     # bundled OUI CSV. Refresh runs once at boot; the 30-day staleness check
     # inside refresh_if_stale makes restarts cheap.
     oui_refresh_task = asyncio.create_task(oui_db.refresh_if_stale())
@@ -119,7 +119,7 @@ app.add_middleware(
     secret_key=get_session_secret(),
     session_cookie="homelab_session",
     same_site="lax",
-    https_only=False,  # homelab — flip to True when fronted by HTTPS
+    https_only=False,  # homelab - flip to True when fronted by HTTPS
     max_age=60 * 60 * 24 * 14,  # 14 days
 )
 
@@ -195,7 +195,7 @@ def healthz(db: Session = Depends(get_db)):
 
 # ── Login brute-force throttle ───────────────────────────────────────────────
 # Single-user homelab app, but an exposed login with unlimited guesses is an easy
-# win for a bot. Track failed attempts per client IP in-memory (no persistence —
+# win for a bot. Track failed attempts per client IP in-memory (no persistence -
 # a restart clears it, which is fine) and lock out after _LOGIN_MAX_FAILS within
 # _LOGIN_WINDOW. Successful login clears the counter.
 _LOGIN_MAX_FAILS = 5
@@ -310,7 +310,7 @@ def list_devices(db: Session = Depends(get_db)):
 
 @api.get("/api-keys")
 def list_api_keys(db: Session = Depends(get_db)):
-    """List API keys (metadata only — the secret is never returned after
+    """List API keys (metadata only - the secret is never returned after
     creation). Ordered newest first."""
     keys = db.query(ApiKey).order_by(ApiKey.id.desc()).all()
     return [
@@ -349,7 +349,7 @@ def delete_api_key(key_id: int, db: Session = Depends(get_db)):
 
 @api.post("/devices", status_code=201)
 def create_device(body: DeviceCreate, db: Session = Depends(get_db)):
-    # EncryptedJSON column accepts a dict directly — encryption happens on flush.
+    # EncryptedJSON column accepts a dict directly - encryption happens on flush.
     dev = Device(
         name=body.name, hostname=body.hostname, device_type=body.device_type,
         adapter_type=body.adapter_type, credentials=body.credentials,
@@ -378,8 +378,8 @@ _SECRET_CRED_KEYS = {
 def _merge_credentials_for_update(existing: dict | None, incoming: dict) -> dict:
     """Right-bias merge with a sentinel for masked secrets. The frontend
     sends `""` (or just omits the key) for password fields the user didn't
-    touch; we treat both as "keep existing". Any other value — including a
-    non-empty string the user just typed — overwrites."""
+    touch; we treat both as "keep existing". Any other value - including a
+    non-empty string the user just typed - overwrites."""
     merged = dict(existing or {})
     for k, v in (incoming or {}).items():
         if k in _SECRET_CRED_KEYS and (v is None or v == ""):
@@ -498,7 +498,7 @@ async def test_notification(device_id: int, db: Session = Depends(get_db)):
     if not cfg.webhook_url:
         raise HTTPException(status_code=400, detail="No webhook URL configured")
     ok, note = await events_mod.post_discord(
-        cfg.webhook_url, f"Test notification — {d.name}",
+        cfg.webhook_url, f"Test notification - {d.name}",
         "If you can read this, HomeLab-Manger notifications are working.",
         "info", d.name,
     )
@@ -510,7 +510,7 @@ async def test_notification(device_id: int, db: Session = Depends(get_db)):
 # ── Shutdown rules (Phase-2 outage orchestration) ────────────────────────────
 #
 # Rules live under a UPS and target another device. The poller evaluates them
-# after each UPS poll (see poller._evaluate_shutdown_rules) — these endpoints
+# after each UPS poll (see poller._evaluate_shutdown_rules) - these endpoints
 # are just CRUD. Actions are pass-through to the target adapter's
 # execute_action, so the available actions depend on the target.
 
@@ -562,7 +562,7 @@ def create_shutdown_rule(ups_id: int, body: ShutdownRuleCreate, db: Session = De
     if not supported:
         raise HTTPException(
             status_code=400,
-            detail=f"{target.name} ({target.adapter_type}) can't be powered off — "
+            detail=f"{target.name} ({target.adapter_type}) can't be powered off - "
                    "no shutdown action is supported for this device type.")
     if db.query(ShutdownRule).filter(
         ShutdownRule.ups_device_id == ups_id,
@@ -618,7 +618,7 @@ def delete_shutdown_rule(rule_id: int, db: Session = Depends(get_db)):
 @api.post("/devices/{ups_id}/shutdown-rules/test")
 async def test_shutdown_plan(ups_id: int, db: Session = Depends(get_db)):
     """Dry-run the outage plan: simulate a full outage and report which rules
-    would fire, in order — without sending any action to a device. Emits a
+    would fire, in order - without sending any action to a device. Emits a
     `[Dry run]` event per rule (so notifications also get exercised) and nothing
     is stamped/armed. Lets the user sanity-check the plan before relying on it."""
     ups = _device_or_404(ups_id, db)
@@ -672,7 +672,7 @@ def get_history(
     """Time-series history for graphing. `metrics` is a comma-separated list
     (default: every metric the device has recorded). The window is either the
     last `hours` (default 24) OR an explicit `from`/`to` (epoch-ms / epoch-s /
-    ISO — same parsing as `/graph`) for a custom range. Series longer than
+    ISO - same parsing as `/graph`) for a custom range. Series longer than
     `max_points` are bucket-averaged. Shape:
     {from, to, metrics: {name: [[iso_ts, value], …]}}."""
     _device_or_404(device_id, db)
@@ -695,7 +695,7 @@ def get_history(
 # ── Graph endpoint (BI / charting tool friendly) ─────────────────────────────
 #
 # `/history` returns a nested `{metrics: {name: [[ts, value], …]}}` object whose
-# rows are 2-element arrays — convenient for the bundled SPA, awkward for generic
+# rows are 2-element arrays - convenient for the bundled SPA, awkward for generic
 # charting tools (Grafana Infinity, Metabase, Observable, pandas.read_json …),
 # which all want a flat array of objects with named, typed columns and an
 # unambiguous timestamp. `/graph` is that shape. It's intentionally generic
@@ -703,10 +703,10 @@ def get_history(
 # rather than e.g. `grafana` so it reads as tool-agnostic.
 #
 # Differences from `/history` that make it "work like other APIs":
-#   • Top-level JSON array — no root/object to drill into.
+#   • Top-level JSON array - no root/object to drill into.
 #   • RFC 3339 timestamps with an explicit `Z` (UTC), so no tool guesses the zone.
 #   • Accepts a `from`/`to` window in epoch-ms (Grafana's ${__from}/${__to}),
-#     epoch-seconds, or ISO-8601 — so the tool's own time picker can drive it.
+#     epoch-seconds, or ISO-8601 - so the tool's own time picker can drive it.
 
 def _parse_time_param(val: str | None) -> datetime | None:
     """Parse a `from`/`to` query value into naive UTC. Accepts epoch
@@ -718,7 +718,7 @@ def _parse_time_param(val: str | None) -> datetime | None:
     if val.lstrip("-").isdigit():
         n = int(val)
         # Grafana sends epoch *milliseconds*; bare seconds are ~1.7e9, ms ~1.7e12.
-        if abs(n) >= 100_000_000_000:  # 1e11 — anything larger is milliseconds
+        if abs(n) >= 100_000_000_000:  # 1e11 - anything larger is milliseconds
             return datetime.utcfromtimestamp(n / 1000.0)
         return datetime.utcfromtimestamp(n)
     dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
@@ -802,12 +802,12 @@ def get_graph(
     """Charting-tool-friendly time-series, as a flat JSON array.
 
     Query params:
-      • `metrics`    — comma-separated metric names (default: all recorded).
-      • `from`/`to`  — window bounds; epoch-ms (Grafana ${__from}/${__to}),
+      • `metrics`    - comma-separated metric names (default: all recorded).
+      • `from`/`to`  - window bounds; epoch-ms (Grafana ${__from}/${__to}),
                        epoch-seconds, or ISO-8601. `to` defaults to now.
-      • `hours`      — used only when `from` is omitted (default 24).
-      • `max_points` — per-series downsample cap (default 600).
-      • `format`     — `long` (default) or `wide`.
+      • `hours`      - used only when `from` is omitted (default 24).
+      • `max_points` - per-series downsample cap (default 600).
+      • `format`     - `long` (default) or `wide`.
 
     `long` → one object per point, ideal for a multi-series panel that splits
     by the `metric` label:
@@ -842,7 +842,7 @@ def get_graph(
 @api.get("/devices/{device_id}/usb-diagnostics")
 async def usb_diagnostics(device_id: int, db: Session = Depends(get_db)):
     """Dump the raw HID report descriptor + decoded usages/values for a USB UPS.
-    The USB analogue of the snmp-walk debug route — used to confirm a new UPS
+    The USB analogue of the snmp-walk debug route - used to confirm a new UPS
     model is covered by the generic HID parser, or to see what's missing."""
     d = _device_or_404(device_id, db)
     if d.adapter_type != "usbups":
@@ -864,7 +864,7 @@ def get_device_credentials(device_id: int, db: Session = Depends(get_db)):
     """Return the device's credentials with secret fields blanked out, so the
     edit modal can pre-populate non-secret values (community, ports, usernames)
     without exposing the actual secrets to the browser. The PUT handler treats
-    empty values for `_SECRET_CRED_KEYS` as "keep existing" — so the user can
+    empty values for `_SECRET_CRED_KEYS` as "keep existing" - so the user can
     save the edit modal without re-typing every password.
 
     The list endpoint deliberately omits credentials entirely; this is the
@@ -875,7 +875,7 @@ def get_device_credentials(device_id: int, db: Session = Depends(get_db)):
     for k in list(creds.keys()):
         if k in _SECRET_CRED_KEYS:
             # Empty string (not the original value) so the frontend can render
-            # a "(unchanged — leave blank to keep)" placeholder without ever
+            # a "(unchanged - leave blank to keep)" placeholder without ever
             # holding the secret in DOM.
             creds[k] = ""
     return creds
@@ -891,7 +891,7 @@ def get_device_credentials(device_id: int, db: Session = Depends(get_db)):
 #                                            the post-save warning toast.
 # Preflight tests are best-effort: a fail here doesn't block creating the
 # device (the user might be testing from a network that can't reach SSH but
-# the polling host can — homelab scenarios are weird).
+# the polling host can - homelab scenarios are weird).
 
 
 @api.get("/adapter-requirements")
@@ -964,7 +964,7 @@ async def preflight_existing_device(device_id: int, db: Session = Depends(get_db
     """Preflight an *already-saved* device using its decrypted stored
     credentials. The auto-preflight after Save/Edit calls this instead of
     /devices/preflight so masked password fields in the edit modal don't
-    produce false-negative results — the form-state path can only see
+    produce false-negative results - the form-state path can only see
     whatever the user typed, not the secrets we kept hidden."""
     d = _device_or_404(device_id, db)
     creds = d.credentials or {}
@@ -1039,7 +1039,7 @@ async def download_kvm_jnlp(device_id: int, request: Request, db: Session = Depe
     For `cimc_redfish` we additionally rewrite the JAR URLs in the JNLP body to
     proxy through `/api/cimc-kvm-proxy/{id}/...`. CIMC 3.0+ returns 403 on
     HEAD requests against `/software/*` (GET works fine), and JWS issues a
-    HEAD on every cached JAR before launch — so without the proxy, JWS
+    HEAD on every cached JAR before launch - so without the proxy, JWS
     aborts on the second launch with `Server returned HTTP response code:
     403 for URL: .../avctNuova.jar.pack.gz`. The proxy synthesises a 200 OK
     on HEAD and streams the GET through.
@@ -1084,7 +1084,7 @@ async def download_kvm_jnlp(device_id: int, request: Request, db: Session = Depe
 # `https://<bmc>/software/<jar>` URL to `/api/cimc-kvm-proxy/<id>/<jar>?t=<token>`.
 # The proxy below answers HEAD with a synthetic 200 (so JWS happily proceeds)
 # and streams the GET through to CIMC. JWS doesn't carry our session cookie,
-# so the proxy is gated by a one-shot token minted alongside the JNLP — the
+# so the proxy is gated by a one-shot token minted alongside the JNLP - the
 # token is good for 10 minutes and only for the device it was issued
 # against. Tokens stay valid for repeat fetches because JWS will issue
 # multiple GETs per launch (different OS-arch native libs, etc.).
@@ -1098,7 +1098,7 @@ def _mint_kvm_proxy_token(device_id: int) -> str:
     token = secrets.token_urlsafe(24)
     expires = time.time() + _KVM_PROXY_TTL_SECONDS
     with _kvm_proxy_lock:
-        # Drop expired entries opportunistically — no separate sweeper task.
+        # Drop expired entries opportunistically - no separate sweeper task.
         now = time.time()
         for tok in [t for t, e in _kvm_proxy_tokens.items() if e["expires"] < now]:
             _kvm_proxy_tokens.pop(tok, None)
@@ -1122,7 +1122,7 @@ def _validate_kvm_proxy_token(device_id: int, token: str) -> bool:
 def _rewrite_cimc_jnlp_for_proxy(body: str, device, creds: dict, request: Request) -> str:
     """Rewrite every `https://<bmc>:<port>/software/<file>` in the JNLP body
     to an authenticated `/api/cimc-kvm-proxy/{id}/<file>?t=<token>` URL on
-    our backend. Leaves codebase / icon / helpurl alone — they're not
+    our backend. Leaves codebase / icon / helpurl alone - they're not
     fetched by JWS in a way that exposes the HEAD-403 issue."""
     import re
     port = int(creds.get("port", 443))
@@ -1135,7 +1135,7 @@ def _rewrite_cimc_jnlp_for_proxy(body: str, device, creds: dict, request: Reques
 
 
 def _legacy_bmc_ssl_context() -> ssl.SSLContext:
-    """Same legacy-cipher SSLContext the CIMC adapter uses — UCS C-series
+    """Same legacy-cipher SSLContext the CIMC adapter uses - UCS C-series
     BMCs ship 1024-bit RSA self-signed certs that modern OpenSSL refuses
     under SECLEVEL=2 with `verify=False` alone."""
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
@@ -1153,7 +1153,7 @@ async def cimc_kvm_proxy(device_id: int, jar_name: str, t: str, request: Request
     d = _device_or_404(device_id, db)
     if d.adapter_type != "cimc_redfish":
         raise HTTPException(status_code=400, detail="Proxy only available for cimc_redfish")
-    # Defensive — `jar_name` should be a single segment by virtue of the route
+    # Defensive - `jar_name` should be a single segment by virtue of the route
     # not using `:path`, but reject anything weird anyway.
     if "/" in jar_name or "\\" in jar_name or jar_name.startswith("."):
         raise HTTPException(status_code=400, detail="Invalid path")
@@ -1163,7 +1163,7 @@ async def cimc_kvm_proxy(device_id: int, jar_name: str, t: str, request: Request
     target = f"https://{d.hostname}:{port}/software/{jar_name}"
 
     # JWS HEADs cached resources before launch. CIMC 3.0+ refuses HEAD on
-    # /software/* with 403 — synthesise a 200 here so JWS proceeds to GET.
+    # /software/* with 403 - synthesise a 200 here so JWS proceeds to GET.
     # Returning a Last-Modified that's always "now" forces JWS to skip the
     # cache and re-fetch (its cached Last-Modified is older), which is the
     # desired behaviour: the cached version may be from an older firmware
@@ -1264,14 +1264,14 @@ async def test_integration(name: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Unknown integration")
     cfg = services_manager.get_integration_config(db, name)
     if not services_manager.integration_configured(name, cfg):
-        raise HTTPException(status_code=400, detail="Integration is not fully configured — save the settings first")
+        raise HTTPException(status_code=400, detail="Integration is not fully configured - save the settings first")
     try:
         if name == "npm":
             return await services_manager.npm_client(cfg).test()
         if name == "portainer":
             return await services_manager.portainer_client(cfg).test()
         hosts = (await services_manager.nc_client(cfg).get_hosts(cfg["domain"]))["hosts"]
-        return {"ok": True, "detail": f"Connected — {len(hosts)} DNS record(s) on {cfg['domain']}"}
+        return {"ok": True, "detail": f"Connected - {len(hosts)} DNS record(s) on {cfg['domain']}"}
     except Exception as exc:
         # The detail reaches the UI's test-result box, but log it too so the
         # server log explains its own 502 lines.
@@ -1341,7 +1341,7 @@ def _validate_forward(scheme: str | None, host: str | None, port: int | None) ->
 
 @api.get("/services/containers")
 async def list_service_containers(db: Session = Depends(get_db)):
-    """Portainer containers with suggested forward targets — feeds the
+    """Portainer containers with suggested forward targets - feeds the
     add/edit modal's container dropdown and the container-state dots on the
     service list."""
     try:
@@ -1468,7 +1468,7 @@ async def update_service(service_id: int, body: ServiceUpdate,
     the NPM host's domain list is rewritten in place (preserving any extra
     domains on imported hosts), and DNS + cert re-provision for the new name.
     Remote-cleanup hiccups during a rename degrade to `warnings` on the
-    response — the re-provision itself still proceeds."""
+    response - the re-provision itself still proceeds."""
     svc = db.query(Service).filter(Service.id == service_id).first()
     if not svc:
         raise HTTPException(status_code=404, detail="Service not found")
@@ -1527,7 +1527,7 @@ async def update_service(service_id: int, body: ServiceUpdate,
             except Exception as exc:
                 warnings.append(f"NPM rename: {exc}")
 
-        # Remove the old DNS record — only the exact one we created.
+        # Remove the old DNS record - only the exact one we created.
         nc_cfg = services_manager.get_integration_config(db, "namecheap")
         if svc.dns_record_type and \
                 services_manager.integration_configured("namecheap", nc_cfg):
@@ -1570,7 +1570,7 @@ async def delete_service(service_id: int, force: bool = False,
                          db: Session = Depends(get_db)):
     """Deprovision (NPM proxy host + cert, then the exact DNS record we
     created) and delete the row. If remote cleanup fails the row is kept and
-    a 502 explains what's left — `?force=true` deletes the row anyway,
+    a 502 explains what's left - `?force=true` deletes the row anyway,
     leaving the remote leftovers for manual cleanup."""
     svc = db.query(Service).filter(Service.id == service_id).first()
     if not svc:

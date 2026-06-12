@@ -1,5 +1,5 @@
 """
-Cisco CIMC adapter for firmware 3.0+ — uses Redfish where it's available
+Cisco CIMC adapter for firmware 3.0+ - uses Redfish where it's available
 and falls back to the XMLAPI for inventory data Redfish 1.0 on this
 firmware doesn't expose (DIMM details, PCIe inventory, full disk info,
 network adapter details).
@@ -8,7 +8,7 @@ The big win over the legacy XMLAPI-only CIMCAdapter is that sensors and
 live power data come from Redfish in a single GET each, instead of a
 25-75 s IPMI-over-LAN subprocess walk per poll cycle. BIOS version, BMC
 firmware version, and the BMC's own management IP also become available
-because Redfish exposes them — the legacy adapter has no equivalent.
+because Redfish exposes them - the legacy adapter has no equivalent.
 
 Tested against CIMC 3.0(4r) on a UCS C22 M3S. RedfishVersion advertised
 is 1.0.0; on this firmware the following endpoints are missing (404):
@@ -16,14 +16,14 @@ is 1.0.0; on this firmware the following endpoints are missing (404):
     /Systems/{sid}/Storage         → fall back to XMLAPI storageLocalDisk
     /Systems/{sid}/PCIeDevices     → fall back to XMLAPI pciEquipSlot
 
-EthernetInterfaces *exist* but only carry MAC + name — no link state,
-speed, or parent NIC model — so we still pull the network view via
+EthernetInterfaces *exist* but only carry MAC + name - no link state,
+speed, or parent NIC model - so we still pull the network view via
 XMLAPI. Newer CIMC firmwares will likely add these endpoints; when they
 do, override the relevant `_*_via_xmlapi` helpers to prefer Redfish.
 
 Cisco's Redfish 1.0 stack returns most numeric fields as JSON strings
 ("208", "33.0", "8800") rather than numbers. Helpers in this module
-coerce on read; keep that in mind if you add a new field — bare
+coerce on read; keep that in mind if you add a new field - bare
 arithmetic on a `Reading` value will TypeError otherwise.
 """
 import asyncio
@@ -63,7 +63,7 @@ class CIMCRedfishAdapter(CIMCAdapter):
             "service": "HTTPS (Redfish)",
             "transport": "redfish",
             "port": 443,
-            "description": "Status, sensors, power, CPU info — required",
+            "description": "Status, sensors, power, CPU info - required",
             "required": True,
         },
         {
@@ -102,7 +102,7 @@ class CIMCRedfishAdapter(CIMCAdapter):
     def __init__(self, hostname: str, credentials: dict):
         super().__init__(hostname, credentials)
         self.base = f"https://{hostname}:{self.port}"
-        # Redfish session token — minted lazily on first 401 against Basic
+        # Redfish session token - minted lazily on first 401 against Basic
         # auth (CIMC accepts Basic on 3.0(4r), but we keep the fallback so
         # firmware revs that tighten this up still work).
         self._rf_token: str | None = None
@@ -118,7 +118,7 @@ class CIMCRedfishAdapter(CIMCAdapter):
         # into CIMC's 4-slot cap on every poll. The legacy CIMCAdapter has
         # the same latent race but masks it with the post-poll SSH reaper.
         self._xml_login_lock = asyncio.Lock()
-        # Same race exists for Redfish — every Basic-Auth GET on Cisco's
+        # Same race exists for Redfish - every Basic-Auth GET on Cisco's
         # 1.0.0 stack is *very* slow (observed ~2.8s/GET on a C22 M3,
         # 3.0(4r)) and parallel requests appear to interfere with each
         # other. Eager-login once and reuse the X-Auth-Token; serialise
@@ -130,7 +130,7 @@ class CIMCRedfishAdapter(CIMCAdapter):
 
     async def _login(self) -> str:
         async with self._xml_login_lock:
-            # Re-check inside the lock — the coroutine that won the race
+            # Re-check inside the lock - the coroutine that won the race
             # already populated _cookie; the loser should reuse it.
             if self._cookie:
                 return self._cookie
@@ -141,7 +141,7 @@ class CIMCRedfishAdapter(CIMCAdapter):
         login, not at call time. Without this, parallel calls
         (`asyncio.gather(_resolve_class(A), _resolve_class(B))`) each read
         `self._cookie` synchronously while it's still None, bake `cookie=""`
-        into both XML bodies, then post both — CIMC mints a fresh session
+        into both XML bodies, then post both - CIMC mints a fresh session
         for every empty-cookie POST and we burn through the 4-slot cap on
         every poll. Login here before building the body so the wire
         request always carries a real cookie."""
@@ -160,7 +160,7 @@ class CIMCRedfishAdapter(CIMCAdapter):
         async with httpx.AsyncClient(verify=self._ssl_ctx, timeout=15) as c:
             r = await c.request(method, f"{self.base}{path}", headers=headers, **kwargs)
 
-        # Token expired or session culled by the BMC — mint a fresh one once.
+        # Token expired or session culled by the BMC - mint a fresh one once.
         if r.status_code == 401:
             self._rf_token = None
             self._rf_session_path = None
@@ -187,7 +187,7 @@ class CIMCRedfishAdapter(CIMCAdapter):
 
     async def _rf_login(self) -> None:
         """Mint an X-Auth-Token via SessionService. CIMC 3.0(4r) does not
-        emit a `Location` header — we read the session URI from the
+        emit a `Location` header - we read the session URI from the
         response body's `@odata.id` instead so close() can DELETE it."""
         async with httpx.AsyncClient(verify=self._ssl_ctx, timeout=15) as c:
             r = await c.post(
@@ -348,7 +348,7 @@ class CIMCRedfishAdapter(CIMCAdapter):
 
     async def _hardware_hybrid(self) -> dict:
         """CPU info comes from Redfish (richer than XMLAPI's processorUnit
-        on 3.0(4r) — gets ProcessorId and Description). DIMM and PCIe
+        on 3.0(4r) - gets ProcessorId and Description). DIMM and PCIe
         inventory still come from XMLAPI because Redfish 1.0 on this
         firmware doesn't expose /Memory or /PCIeDevices."""
         cpu_task = self._cpus_via_redfish()
@@ -470,7 +470,7 @@ class CIMCRedfishAdapter(CIMCAdapter):
 
     # Names come from the Cisco SDR (e.g. "FAN1_TACH1", "P1_TEMP_SENS",
     # "CPU1_VCORE"), which match the IPMI labels the legacy adapter
-    # produced — so the frontend renderer needs no changes.
+    # produced - so the frontend renderer needs no changes.
     _RPM_NAME_RE = re.compile(r"^(.*?)_TACH\d+$", re.IGNORECASE)
 
     async def _sensors_via_redfish(self) -> dict:
@@ -489,7 +489,7 @@ class CIMCRedfishAdapter(CIMCAdapter):
                     continue
                 c = _to_float(t.get("ReadingCelsius"))
                 if c is None or c <= 0:
-                    # Cisco emits "0.0" for unpopulated CPU sockets — same
+                    # Cisco emits "0.0" for unpopulated CPU sockets - same
                     # filter the legacy XMLAPI path used.
                     continue
                 temps.append({
@@ -566,7 +566,7 @@ class CIMCRedfishAdapter(CIMCAdapter):
                 return {"ok": True}
             except Exception as e:
                 return {"error": f"Redfish: {e}"}
-        # KVM JNLP minting still goes through XMLAPI — Redfish 1.0 on
+        # KVM JNLP minting still goes through XMLAPI - Redfish 1.0 on
         # 3.0(4r) doesn't surface a kvm.jnlp action. The XMLAPI flow is
         # inherited from CIMCAdapter unchanged. main.py rewrites the JAR
         # URLs in the response to point at our /api/cimc-kvm-proxy

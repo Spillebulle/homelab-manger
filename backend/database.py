@@ -44,7 +44,7 @@ class Base(DeclarativeBase):
 
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    from . import models  # noqa: F401 — ensure models are registered
+    from . import models  # noqa: F401 - ensure models are registered
     Base.metadata.create_all(bind=engine)
     _migrate_device_cache_unique(engine)
     _migrate_add_poll_interval(engine)
@@ -92,7 +92,7 @@ def _migrate_add_poll_interval(engine):
 def _migrate_add_shutdown_rule_ordering(engine):
     """Add `priority` + `delay_after_sec` to pre-existing `shutdown_rules`
     tables (outage-orchestration ordering). Same ALTER-by-hand pattern as
-    poll_interval — create_all never alters existing tables. Idempotent."""
+    poll_interval - create_all never alters existing tables. Idempotent."""
     with engine.begin() as conn:
         cols = [r[1] for r in conn.execute(text("PRAGMA table_info(shutdown_rules)")).fetchall()]
         if not cols:
@@ -111,7 +111,7 @@ def _migrate_device_cache_unique(engine):
     upsert had a race. SQLite won't retroactively add a table-level constraint
     via create_all, so on every startup we (a) drop duplicates, keeping the
     highest-id row per (device_id, cache_key), and (b) add a unique index that
-    blocks future duplicates atomically. Idempotent — safe to run repeatedly."""
+    blocks future duplicates atomically. Idempotent - safe to run repeatedly."""
     with engine.begin() as conn:
         deleted = conn.execute(text(
             "DELETE FROM device_cache WHERE id NOT IN ("
@@ -128,14 +128,14 @@ def _migrate_device_cache_unique(engine):
 def _migrate_credentials_to_encrypted(engine):
     """Pre-encryption deployments stored `devices.credentials` as plaintext
     JSON. The EncryptedJSON column type decodes those transparently on read,
-    but every NEW write goes out as ciphertext — so a row only flips to
+    but every NEW write goes out as ciphertext - so a row only flips to
     encrypted form when the user next saves that device. To avoid leaving
     plaintext sitting in the DB indefinitely, do a one-shot rewrite here on
     startup: for every row whose `credentials` doesn't start with `enc:`,
     decode it and re-write it back through the encryption path.
 
-    Idempotent — encrypted rows are skipped. Safe to run repeatedly."""
-    # Lazy import — models.py imports credentials_crypto which imports
+    Idempotent - encrypted rows are skipped. Safe to run repeatedly."""
+    # Lazy import - models.py imports credentials_crypto which imports
     # database.py for the DB_PATH constant. The cycle resolves at function-
     # call time but not at module-import time.
     from .credentials_crypto import is_encrypted, encrypt_credentials, decrypt_credentials
@@ -147,7 +147,7 @@ def _migrate_credentials_to_encrypted(engine):
                 continue
             # Decode plaintext JSON via the same helper used at read time, so
             # malformed legacy values produce {} rather than crashing the
-            # migration — the user can re-enter creds via the edit modal.
+            # migration - the user can re-enter creds via the edit modal.
             value = decrypt_credentials(raw)
             new_blob = encrypt_credentials(value)
             conn.execute(

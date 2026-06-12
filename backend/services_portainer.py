@@ -2,7 +2,7 @@
 
 Used by the Services feature to suggest forward targets (container → host
 IP + published port) and to show container state next to linked services.
-Nothing is ever written to Portainer — the link is display/navigation only.
+Nothing is ever written to Portainer - the link is display/navigation only.
 
 Auth is an API key (Portainer: user menu → My account → Access tokens) sent
 as `X-API-Key`. Container listings go through Portainer's Docker proxy
@@ -42,7 +42,7 @@ class PortainerClient:
             except Exception:
                 pass
             raise PortainerError(f"Portainer GET {path}: HTTP {r.status_code}"
-                                 + (f" — {detail}" if detail else ""))
+                                 + (f" - {detail}" if detail else ""))
         return r.json()
 
     async def endpoints(self) -> list[dict]:
@@ -95,13 +95,11 @@ class PortainerClient:
     async def test(self) -> dict:
         eps = await self.endpoints()
         names = ", ".join(e.get("Name", "?") for e in eps) or "none"
-        return {"ok": True, "detail": f"Connected — {len(eps)} environment(s): {names}"}
+        return {"ok": True, "detail": f"Connected - {len(eps)} environment(s): {names}"}
 
 
 def host_from_url(base_url: str) -> str | None:
-    """The bare host of the Portainer URL — used as the default Docker-host
-    IP for forward targets when `docker_host_ip` isn't configured (Portainer
-    usually runs on the Docker host itself)."""
+    """The bare host of a URL."""
     try:
         host = urlsplit(base_url).hostname
         return host or None
@@ -109,14 +107,24 @@ def host_from_url(base_url: str) -> str | None:
         return None
 
 
+def looks_like_ip(value: str | None) -> bool:
+    import ipaddress
+    try:
+        ipaddress.ip_address(str(value or ""))
+        return True
+    except ValueError:
+        return False
+
+
 def endpoint_host_ip(endpoint: dict, fallback: str | None) -> str | None:
     """The Docker host's address for one Portainer environment, derived from
     the endpoint's own URL: agent/remote endpoints look like
-    `tcp://192.168.1.20:9001` → that host is where the containers' published
-    ports live. Local socket endpoints (`unix://`, `npipe://`, or blank) have
-    no host in the URL, so they fall back to the configured `docker_host_ip`
-    (or the Portainer URL's host — for the local endpoint, Portainer runs on
-    that same machine)."""
+    `tcp://192.168.1.20:9001`, and that host is where the containers'
+    published ports live. Local socket endpoints (`unix://`, `npipe://`, or
+    blank) have no host in the URL; Portainer's API doesn't expose the
+    machine's LAN IP anywhere, so those fall back to the user-configured
+    `docker_host_ip` (which may be None, meaning no suggestion is possible -
+    better than suggesting a wrong address)."""
     url = str(endpoint.get("URL") or "")
     if url.startswith("tcp://"):
         host = host_from_url(url)

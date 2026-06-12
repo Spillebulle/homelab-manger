@@ -89,7 +89,7 @@ def bootstrap_admin() -> None:
     """If no auth user exists, create one from ADMIN_PASSWORD (or 'changeme').
 
     A commit failure here would otherwise crash FastAPI's lifespan with an
-    opaque traceback and no auth_users row — the operator then can't even log
+    opaque traceback and no auth_users row - the operator then can't even log
     in to investigate. Roll back, log loud, and let the app start anyway so
     `/api/auth/login` can return a clean 401 instead of a 500."""
     db: Session = SessionLocal()
@@ -105,7 +105,7 @@ def bootstrap_admin() -> None:
         except Exception as exc:
             db.rollback()
             logger.error(
-                "Auth bootstrap FAILED — cannot create admin user %r: %s: %s. "
+                "Auth bootstrap FAILED - cannot create admin user %r: %s: %s. "
                 "Login will be impossible until the DB is repaired or "
                 "auth_users is seeded manually.",
                 username, type(exc).__name__, exc,

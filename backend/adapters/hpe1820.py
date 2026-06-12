@@ -1,14 +1,14 @@
 """
 HPE OfficeConnect Switch 1820 adapter (J9984A and family).
 
-This switch has no CLI/SSH — only a web UI (HTTP) plus SNMP. The default SNMP
+This switch has no CLI/SSH - only a web UI (HTTP) plus SNMP. The default SNMP
 community ("public") is read-only with no SET access, so:
 
   Reads  → SNMPv2c (standard MIBs, all populated on PT.02.x firmware).
   Writes → HTTP form-POSTs against the web UI (cookie-session "SID").
 
 The web UI has a tiny session pool (3 slots observed on PT.02.05); we always
-log out at the end of an action — and reads never touch the web UI — so we
+log out at the end of an action - and reads never touch the web UI - so we
 don't drift toward "maximum number of web sessions" errors. Reads also stay
 fast because SNMP doesn't need a session.
 """
@@ -30,19 +30,19 @@ from .snmp import (
 
 logger = logging.getLogger(__name__)
 
-# Q-BRIDGE-MIB — the 1820's VLAN config lives here (and reads + decodes cleanly,
+# Q-BRIDGE-MIB - the 1820's VLAN config lives here (and reads + decodes cleanly,
 # unlike on DGS-3120 where R4.x reports phantom rows).
 _DOT1Q_VLAN_NAME            = "1.3.6.1.2.1.17.7.1.4.3.1.1"
 _DOT1Q_VLAN_EGRESS_PORTS    = "1.3.6.1.2.1.17.7.1.4.3.1.2"  # tagged + untagged egress (PortList bitmap)
 _DOT1Q_VLAN_UNTAGGED_PORTS  = "1.3.6.1.2.1.17.7.1.4.3.1.4"  # untagged egress (subset of above)
 _DOT1Q_PVID                 = "1.3.6.1.2.1.17.7.1.4.5.1.1"  # per-port default VLAN
 
-# Q-BRIDGE FDB — bridge-MIB's dot1dTpFdbAddress is empty on the 1820; the
+# Q-BRIDGE FDB - bridge-MIB's dot1dTpFdbAddress is empty on the 1820; the
 # VID-aware table is the only path.
 _DOT1Q_TP_FDB_PORT          = "1.3.6.1.2.1.17.7.1.2.2.1.2"
 _BRIDGE_PORT_TO_IF          = "1.3.6.1.2.1.17.1.4.1.2"
 
-# ifTable — the 1820 reports 48 copper + 4 SFP + 1 CPU + 16 LAG (= 69 entries).
+# ifTable - the 1820 reports 48 copper + 4 SFP + 1 CPU + 16 LAG (= 69 entries).
 # All physical ports use ifType=6 (ethernetCsmacd); the CPU port uses ifType=1
 # (other); LAGs use ifType=161 (ieee8023adLag). We use ifType to filter.
 _IF_TABLE_TYPE              = "1.3.6.1.2.1.2.2.1.3"
@@ -51,7 +51,7 @@ _IFTYPE_OTHER               = 1
 _IFTYPE_LAG                 = 161
 
 # ifDescr on the 1820 reads "N Gigabit - Level" (where N is the port number).
-# That's noise in the UI — strip the suffix and prefer a clean "Port N" label.
+# That's noise in the UI - strip the suffix and prefer a clean "Port N" label.
 _GENERIC_IFDESCR_RE = re.compile(r"^(\d+)\s+Gigabit\s*-\s*Level\s*$")
 
 # How many copper ports the model has (everything above is SFP). The 1820-48G
@@ -74,7 +74,7 @@ _MAX_VLANS         = 64
 _VLAN_NAME_MAX     = 32
 _VLAN_NAME_RE      = re.compile(r"^[\w\-]{1,32}$")  # web UI accepts letters/digits/underscore/dash
 
-# A "submit" click on a form/modal — the framework appends b_<form>_clicked
+# A "submit" click on a form/modal - the framework appends b_<form>_clicked
 # = b_<form>_submit when the dialog's Apply button is pressed.
 def _submit_marker(form_id: str = "modal1") -> dict[str, str]:
     return {f"b_{form_id}_clicked": f"b_{form_id}_submit"}
@@ -106,7 +106,7 @@ def _encode_portlist(ports: list[int], min_bytes: int) -> bytes:
     matches the size the agent expects (the 1820 returns 9-byte bitmaps
     even when only ports 1-8 are populated).
 
-    Unused at the moment — we write through the web UI, not via SNMP-SET —
+    Unused at the moment - we write through the web UI, not via SNMP-SET -
     but kept here so a future SNMP-write path doesn't have to reinvent it.
     """
     if not ports:
@@ -170,8 +170,8 @@ class HPE1820Adapter(SNMPAdapter):
     async def _status(self) -> dict:
         base = await super()._status()
         # The 1820's Entity MIB is empty (entPhysicalSoftwareRev returns 0 rows),
-        # but sysDescr embeds the firmware version after the model — pull it
-        # out so the UI shows "PT.02.05" instead of "—".
+        # but sysDescr embeds the firmware version after the model - pull it
+        # out so the UI shows "PT.02.05" instead of "-".
         if not base.get("firmware") and base.get("sysDescr"):
             m = re.search(r",\s*(PT\.\d[\w.\-]*)\b", base["sysDescr"])
             if m:
@@ -196,10 +196,10 @@ class HPE1820Adapter(SNMPAdapter):
             if t == _IFTYPE_ETHERNET
         ]
         if not physical:
-            return ports  # SNMP path failed — fall back to base behaviour.
+            return ports  # SNMP path failed - fall back to base behaviour.
 
         # On the 1820 the highest ethernet ifIndex equals copper + SFP count.
-        # Detect the SFP boundary by counting ifHighSpeed=0 ports... no — that
+        # Detect the SFP boundary by counting ifHighSpeed=0 ports... no - that
         # would mis-tag down ports. Use a simpler rule: ports 1..(max-4) are
         # copper, last 4 are SFP for the 1820-48G family. For 1820-24G the
         # split is max-2.
@@ -292,7 +292,7 @@ class HPE1820Adapter(SNMPAdapter):
 
         b2i = {oid.rsplit(".", 1)[-1]: str(_safe_int(v)) for oid, v in _safe(b2i_w)}
 
-        # ifType to filter the CPU interface out of "connected devices" —
+        # ifType to filter the CPU interface out of "connected devices" -
         # otherwise the switch's own MAC always shows up.
         try:
             type_walk = await _walk(self.hostname, self.community, _IF_TABLE_TYPE, self.port)
@@ -318,7 +318,7 @@ class HPE1820Adapter(SNMPAdapter):
             if bridge_port == "0":
                 continue
             if_index = b2i.get(bridge_port, bridge_port)
-            # Skip the CPU port — it forwards the switch's own MAC, not a
+            # Skip the CPU port - it forwards the switch's own MAC, not a
             # remote device.
             if type_by_idx.get(if_index) == _IFTYPE_OTHER:
                 continue
@@ -361,7 +361,7 @@ class HPE1820Adapter(SNMPAdapter):
     @contextmanager
     def _web_session_sync(self):
         """Single-session context. Yields an httpx Client that is logged in.
-        Always logs out on exit so we don't leak the (small) session pool —
+        Always logs out on exit so we don't leak the (small) session pool -
         even on exceptions."""
         client = httpx.Client(base_url=self._base_url(), timeout=10, follow_redirects=False, verify=False)
         try:
@@ -370,7 +370,7 @@ class HPE1820Adapter(SNMPAdapter):
                 "password": self.web_password,
             })
             if r.status_code == 503:
-                raise RuntimeError("HPE 1820 web session pool is full — wait a few minutes for idle sessions to time out")
+                raise RuntimeError("HPE 1820 web session pool is full - wait a few minutes for idle sessions to time out")
             if r.status_code != 200:
                 raise RuntimeError(f"login HTTP {r.status_code}")
             # Body is JSON: {"redirect": "...", "error": ""} on success.
@@ -605,7 +605,7 @@ class HPE1820Adapter(SNMPAdapter):
         untagged-add doesn't undo a sibling tagged-add via the switch's
         auto-remove-from-prior-untagged-VLAN behaviour.
 
-        Unlike D-Link there's no "save config" command — the 1820 commits
+        Unlike D-Link there's no "save config" command - the 1820 commits
         each form post immediately to startup-config.
         """
         creates = action.get("creates") or []

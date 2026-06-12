@@ -1,5 +1,5 @@
 """
-Generic Redfish adapter — supports:
+Generic Redfish adapter - supports:
   HP iLO 5+ (full Redfish 1.6+)
   Dell iDRAC 8+ (Redfish 1.0+)
   Huawei iBMC (Redfish 1.0+)
@@ -13,7 +13,7 @@ import httpx
 from .base import BaseAdapter
 
 
-# pysnmp 7.x leaks when SnmpEngine() is built repeatedly — and the Huawei
+# pysnmp 7.x leaks when SnmpEngine() is built repeatedly - and the Huawei
 # enrichment path used to build ~4 per poll cycle, per iBMC device (one each in
 # _huawei_enrich / _huawei_enrich_power / _huawei_pcie_cards /
 # _huawei_chassis_model). Each engine drags in a large MIB/config datastore that
@@ -22,7 +22,7 @@ from .base import BaseAdapter
 # was a container creeping to multi-GB RAM and one core pinned at 100%, getting
 # "slower and slower" as orphaned transports accumulated. Fix: build exactly one
 # engine/USM/transport per (host, port, USM identity) and reuse it for the life
-# of the process — never close the dispatcher. The poller and every HTTP handler
+# of the process - never close the dispatcher. The poller and every HTTP handler
 # share uvicorn's single event loop, so a cached transport stays bound to a live
 # loop. Keyed including the secrets so a credential change rebuilds cleanly (the
 # stale engine leaks once, which is acceptable for a rare event).
@@ -31,12 +31,12 @@ _SNMP_SETUP_CACHE: dict[tuple, tuple] = {}
 
 class RedfishAdapter(BaseAdapter):
     # Redfish exposes both a graceful (GracefulShutdown) and a forced (ForceOff)
-    # power-down — see _RESET_TYPES — so both are valid UPS-shutdown targets.
+    # power-down - see _RESET_TYPES - so both are valid UPS-shutdown targets.
     SHUTDOWN_ACTIONS = ["graceful_shutdown", "power_off"]
 
     # One adapter class serves redfish / ilo / idrac / ibmc. The base requirement
     # is HTTPS on the configured port. Huawei iBMC gets an extra SNMPv3 hint
-    # added at runtime — see `requirements()` — because Redfish 1.0 there
+    # added at runtime - see `requirements()` - because Redfish 1.0 there
     # doesn't expose CPU model / DIMM type / PCIe inventory and we backfill
     # via the Huawei MIB.
     REQUIREMENTS = [
@@ -81,10 +81,10 @@ class RedfishAdapter(BaseAdapter):
         # Filled lazily when Basic Auth gets a 401 (Huawei iBMC rejects Basic).
         self._auth_token: str | None = None
         self._session_uri: str | None = None
-        # System object cache — vendors disagree on subcollection paths, so we
+        # System object cache - vendors disagree on subcollection paths, so we
         # fetch the System once and follow @odata.id links instead of guessing.
         self._system_cache: dict | None = None
-        # Huawei iBMC corrupts response bodies under concurrent fan-out — see
+        # Huawei iBMC corrupts response bodies under concurrent fan-out - see
         # _members(). Set to a Semaphore(1) once we know the box is a Huawei.
         self._members_sem: asyncio.Semaphore | None = None
 
@@ -95,7 +95,7 @@ class RedfishAdapter(BaseAdapter):
 
     async def _login(self) -> None:
         """POST to SessionService for an X-Auth-Token. Required for Huawei iBMC.
-        Save the Location header so close() can DELETE the session — Huawei
+        Save the Location header so close() can DELETE the session - Huawei
         enforces a low concurrent-session limit (~4) and will reject new logins
         with `SessionLimitExceeded` if we leak."""
         async with httpx.AsyncClient(verify=False, timeout=15) as c:
@@ -161,7 +161,7 @@ class RedfishAdapter(BaseAdapter):
     async def _members(self, collection: dict) -> list[dict]:
         # Huawei iBMC mis-routes concurrent Redfish responses (e.g. DIMM010's
         # GET returns DIMM030's JSON body) at any fan-out > 1, with no
-        # deterministic ceiling — caps of 2, 4, and 8 all scramble in some
+        # deterministic ceiling - caps of 2, 4, and 8 all scramble in some
         # trials. Serialise on Huawei; everywhere else stays full-parallel.
         sem = self._members_sem
         if sem is None:
@@ -198,7 +198,7 @@ class RedfishAdapter(BaseAdapter):
         manufacturer = s.get("Manufacturer", "")
         model        = s.get("Model", "")
 
-        # Manager / BMC enrichment — firmware version and management IP. Best-
+        # Manager / BMC enrichment - firmware version and management IP. Best-
         # effort: any failure leaves the field null.
         bmc_firmware = ""
         bmc_ip       = ""
@@ -288,7 +288,7 @@ class RedfishAdapter(BaseAdapter):
     # Huawei iBMC (Redfish 1.0.2) leaves Processor.Model as the literal stub
     # "Central Processor" and exposes no Description and no Oem extension. The
     # only identifier it provides is a raw CPUID dump in ProcessorID (note the
-    # all-caps "ID" — non-spec; the standard field is "ProcessorId"). When the
+    # all-caps "ID" - non-spec; the standard field is "ProcessorId"). When the
     # Model field is unusable we decode that dump into a microarch codename.
     _GENERIC_CPU_MODEL = {"", "central processor", "cpu", "processor"}
 
@@ -363,7 +363,7 @@ class RedfishAdapter(BaseAdapter):
     #   .16.50.1.10.{memIdx}     hwMemoryInfoLocation slot name e.g. "DIMM000",
     #                                                  or "0" for an empty/absent slot
     #   .16.50.1.11.{memIdx}     hwMemoryInfoType     e.g. "DDR4"
-    # (Neighbouring .15.50.1.7.x is a *status* int, not a name — don't use it.)
+    # (Neighbouring .15.50.1.7.x is a *status* int, not a name - don't use it.)
     _HUAWEI_CPU_MODEL_OID    = "1.3.6.1.4.1.2011.2.235.1.1.15.50.1.4"
     _HUAWEI_MEM_SLOT_OID     = "1.3.6.1.4.1.2011.2.235.1.1.16.50.1.10"
     _HUAWEI_MEM_TYPE_OID     = "1.3.6.1.4.1.2011.2.235.1.1.16.50.1.11"
@@ -391,7 +391,7 @@ class RedfishAdapter(BaseAdapter):
     # PSU subtree (.6.50). Discovered by walking the Huawei MIB on a
     # FusionStorage node; col 4 = model name, col 6 = rated W, col 8 = live
     # input watts, col 13 = "PS1"/"PS2". No output-watts column exists on
-    # this firmware — only input. Sum of col 8 across PSUs ≈
+    # this firmware - only input. Sum of col 8 across PSUs ≈
     # PowerControl[0].PowerConsumedWatts (~6W of measurement noise).
     _HUAWEI_PSU_INPUT_OID    = "1.3.6.1.4.1.2011.2.235.1.1.6.50.1.8"
 
@@ -429,7 +429,7 @@ class RedfishAdapter(BaseAdapter):
         priv_proto = priv_map.get(priv_name, ps.USM_PRIV_CFB128_AES)
 
         # Reuse a cached engine/USM/transport if we've built one for this exact
-        # identity — see _SNMP_SETUP_CACHE comment at module level. This is the
+        # identity - see _SNMP_SETUP_CACHE comment at module level. This is the
         # whole point of the fix: one engine for the life of the process instead
         # of one per poll.
         cache_key = (self.hostname, port, user, auth_pass, priv_pass, auth_name, priv_name)
@@ -552,7 +552,7 @@ class RedfishAdapter(BaseAdapter):
         """Walk the Huawei PCIe inventory table and return a list of
         `{id, manufacturer, model, boardId, serial, class}` dicts. The system
         marketing name (e.g. "FusionStorage File/Object Node") is filtered out
-        of `model` and replaced by the Huawei BoardId — embedded NICs that
+        of `model` and replaced by the Huawei BoardId - embedded NICs that
         don't carry a friendly name fall back to that. Best-effort: returns
         [] on any SNMP failure."""
         setup = await self._huawei_snmp_setup()
@@ -665,7 +665,7 @@ class RedfishAdapter(BaseAdapter):
         )
         result: dict[str, dict] = {}
         for idx, slot in slots.items():
-            # iBMC fills unpopulated slots with "0" — skip those.
+            # iBMC fills unpopulated slots with "0" - skip those.
             if not slot or slot == "0":
                 continue
             result[slot] = {"location": slot, "type": types.get(idx) or None}
@@ -770,7 +770,7 @@ class RedfishAdapter(BaseAdapter):
                 })
 
         # Huawei iBMC's StorageController collection has no Manufacturer or
-        # Model on this firmware — the controller name is the literal
+        # Model on this firmware - the controller name is the literal
         # "Storage", which is useless in the UI. Pull the actual RAID card
         # model from the PCIe MIB and inject it as the controller's `model`
         # field. The frontend renders `c.model || c.name`, so this surfaces

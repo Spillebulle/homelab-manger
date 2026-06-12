@@ -3,7 +3,7 @@ Event log + notification dispatch.
 
 `emit_event` is the single entry point: it stores an Event row (pruning the log
 to a bound) and then fans the event out to any matching notification channels
-(currently a per-device Discord webhook). Everything is best-effort — a failed
+(currently a per-device Discord webhook). Everything is best-effort - a failed
 notification never breaks polling or the action that triggered it.
 """
 import asyncio
@@ -61,7 +61,7 @@ async def emit_event(db, device, event_type: str, title: str,
     _prune(db)
     log_fn = logger.warning if severity != "info" else logger.info
     log_fn("EVENT [%s/%s] %s%s", event_type, severity, title,
-           f" — {detail}" if detail else "")
+           f" - {detail}" if detail else "")
 
     if device_id is not None:
         try:
@@ -102,7 +102,7 @@ async def _dispatch(db, device_id, device_name, event_type, title, detail, sever
 
 async def post_discord(webhook_url: str, title: str, detail: str | None,
                        severity: str = "info", device_name: str | None = None) -> tuple[bool, str]:
-    """POST a Discord embed to a webhook. Returns (ok, message). Best-effort —
+    """POST a Discord embed to a webhook. Returns (ok, message). Best-effort -
     used both by the dispatcher and the 'send test' endpoint."""
     embed = {
         "title": title,

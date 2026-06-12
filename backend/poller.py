@@ -28,7 +28,7 @@ _ups_prev_state: dict[int, str] = {}   # device_id → last seen UPS state
 # Default seconds between polls when a device doesn't set its own
 # `poll_interval`. Overridable per-process via the POLL_INTERVAL env var.
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "60"))
-# Floor for a per-device override — stops a typo (e.g. 1) from hammering a
+# Floor for a per-device override - stops a typo (e.g. 1) from hammering a
 # device or busy-looping the scheduler.
 MIN_POLL_INTERVAL = 5
 # How often the scheduler wakes to check which devices are due. Polls fire as
@@ -46,7 +46,7 @@ def _device_interval(device) -> float:
     return float(max(int(iv), MIN_POLL_INTERVAL))
 
 # How long to keep time-series samples (device_metrics). Pruned per device on
-# every poll — an indexed DELETE, cheap at homelab scale. 0/negative disables
+# every poll - an indexed DELETE, cheap at homelab scale. 0/negative disables
 # pruning (unbounded history).
 METRICS_RETENTION_DAYS = int(os.environ.get("METRICS_RETENTION_DAYS", "30"))
 
@@ -78,7 +78,7 @@ def _record_metrics(db, device_id: int, data, ts: datetime) -> None:
 
 
 def _upsert_cache(db, device_id: int, key: str, data: str | None, error: str | None):
-    # SQLite's INSERT ... ON CONFLICT(...) DO UPDATE is atomic — pre-v0.4.2 we
+    # SQLite's INSERT ... ON CONFLICT(...) DO UPDATE is atomic - pre-v0.4.2 we
     # did SELECT-then-INSERT, which let two concurrent polls both miss the
     # SELECT and both INSERT, leaving duplicate rows that confuse the cache
     # reader. The unique index on (device_id, cache_key) is what makes this
@@ -93,11 +93,11 @@ def _upsert_cache(db, device_id: int, key: str, data: str | None, error: str | N
             set_={"data": data, "error": None, "updated_at": now},
         )
     else:
-        # On error, PRESERVE the last good `data` and its `updated_at` — only
+        # On error, PRESERVE the last good `data` and its `updated_at` - only
         # refresh `error`. This lets the UI keep showing the last-known reading
         # under an "offline / last status" treatment instead of going blank,
         # and makes `updated_at` mean "last successful poll" (which is what the
-        # dashboard's last_seen / "Updated …" wants — previously it bumped on
+        # dashboard's last_seen / "Updated …" wants - previously it bumped on
         # every failed attempt, so an offline device falsely read "just now").
         # First-ever poll with no prior row inserts a data-less error row.
         stmt = sqlite_insert(DeviceCache).values(
@@ -143,7 +143,7 @@ async def _execute_shutdown_rule(db, rule, ups_device, dry_run: bool = False) ->
     record an event (attributed to the UPS so it shows in the UPS log and uses
     the UPS's notification config).
 
-    `dry_run=True` performs no real action and stamps nothing — it just logs and
+    `dry_run=True` performs no real action and stamps nothing - it just logs and
     emits a `[Dry run]` event (which still flows through the notification config,
     so the user can validate their Discord wiring without powering anything off)."""
     label = _ACTION_LABEL.get(rule.action, rule.action)
@@ -153,14 +153,14 @@ async def _execute_shutdown_rule(db, rule, ups_device, dry_run: bool = False) ->
                      rule.id, rule.target_device_id)
         return
     if dry_run:
-        logger.warning("OUTAGE ACTION (DRY RUN): would fire rule %d — %s on %r (%s)",
+        logger.warning("OUTAGE ACTION (DRY RUN): would fire rule %d - %s on %r (%s)",
                        rule.id, rule.action, target.name, target.adapter_type)
         await emit_event(db, ups_device, EV_ACTION,
                          f"[Dry run] {label} → {target.name}",
-                         detail="Test only — no action sent to the device.",
+                         detail="Test only - no action sent to the device.",
                          severity="info")
         return
-    logger.warning("OUTAGE ACTION: firing rule %d — %s on %r (%s)",
+    logger.warning("OUTAGE ACTION: firing rule %d - %s on %r (%s)",
                    rule.id, rule.action, target.name, target.adapter_type)
     ok, note = False, ""
     adapter = get_adapter(target.adapter_type, target.hostname, target.credentials or {})
@@ -195,7 +195,7 @@ async def _evaluate_shutdown_rules(db, ups_device, status_data: dict) -> None:
 
     On mains power: re-arm any rules that previously fired (so the next outage
     can trigger them again). On battery: fire each armed rule whose threshold is
-    crossed exactly once — `last_triggered_at` is the persistent guard, so an
+    crossed exactly once - `last_triggered_at` is the persistent guard, so an
     app restart mid-outage won't re-shut-down an already-downed machine."""
     rules = (db.query(ShutdownRule)
              .filter(ShutdownRule.ups_device_id == ups_device.id,
@@ -210,7 +210,7 @@ async def _evaluate_shutdown_rules(db, ups_device, status_data: dict) -> None:
             for r in rearmed:
                 r.last_triggered_at = None
             db.commit()
-            logger.warning("UPS %r back on mains — re-armed %d shutdown rule(s)",
+            logger.warning("UPS %r back on mains - re-armed %d shutdown rule(s)",
                            ups_device.name, len(rearmed))
             await emit_event(db, ups_device, EV_ACTION,
                              f"Shutdown rules re-armed ({len(rearmed)})",
@@ -266,7 +266,7 @@ async def _emit_transition_events(db, device, status_data, status_ok: bool,
     the latest poll result. Called once per poll per device."""
     did = device.id
 
-    # Offline/online — debounced so a single transient failure isn't an event.
+    # Offline/online - debounced so a single transient failure isn't an event.
     if status_ok:
         if _dev_offline.get(did):
             _dev_offline[did] = False
@@ -281,7 +281,7 @@ async def _emit_transition_events(db, device, status_data, status_ok: bool,
                              f"{device.name} is offline",
                              detail=status_error, severity="warning")
 
-    # UPS state changes — only for UPS devices, only on a fresh read.
+    # UPS state changes - only for UPS devices, only on a fresh read.
     if device.device_type != "ups" or not status_ok or not isinstance(status_data, dict):
         return
     new_state = status_data.get("state")
@@ -290,7 +290,7 @@ async def _emit_transition_events(db, device, status_data, status_ok: bool,
         return
     _ups_prev_state[did] = new_state
     if prev is None:
-        return  # first observation — set baseline silently, don't alert
+        return  # first observation - set baseline silently, don't alert
     charge = status_data.get("charge_pct")
     runtime = status_data.get("runtime_text")
     ctx = []
@@ -322,7 +322,7 @@ async def poll_device(device_id: int, on_update=None):
         adapter = get_adapter(device.adapter_type, device.hostname, credentials)
 
         # Capture a fresh, successful status read so the shutdown-rule
-        # evaluation below acts only on real data — never on a preserved/stale
+        # evaluation below acts only on real data - never on a preserved/stale
         # reading from a failed poll (status_data stays None on a status error).
         status_data = None
         status_error = None
@@ -336,7 +336,7 @@ async def poll_device(device_id: int, on_update=None):
                     if key == "status":
                         status_data = data
                         status_seen = True
-                    # The `metrics` key doubles as the time-series source —
+                    # The `metrics` key doubles as the time-series source -
                     # persist its numeric members for graphing.
                     if key == _METRICS_CACHE_KEY:
                         _record_metrics(db, device_id, data, datetime.utcnow())
@@ -394,8 +394,8 @@ async def poll_loop(on_update=None):
     """Per-device scheduler. Wakes every _BASE_TICK, and for each enabled
     device whose `poll_interval` has elapsed since its last poll, fires
     `poll_device` as an independent task. Firing tasks (rather than awaiting a
-    single gather of everyone) means a slow device — a CIMC poll can run 20-30s
-    — doesn't delay a fast UPS set to a short interval, and each device is
+    single gather of everyone) means a slow device - a CIMC poll can run 20-30s
+    - doesn't delay a fast UPS set to a short interval, and each device is
     re-polled on its own cadence. A device already mid-poll is skipped until it
     finishes (no overlap), so an interval shorter than a device's actual poll
     time just polls it back-to-back."""
@@ -433,7 +433,7 @@ async def poll_loop(on_update=None):
 
             for device_id, interval in devices:
                 if device_id in in_flight:
-                    continue   # still polling from a previous tick — don't overlap
+                    continue   # still polling from a previous tick - don't overlap
                 if now - last_polled.get(device_id, float("-inf")) >= interval:
                     last_polled[device_id] = now
                     in_flight.add(device_id)

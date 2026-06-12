@@ -2,21 +2,21 @@
 MAC vendor lookup, backed by the IEEE OUI registry.
 
 Two CSV locations are consulted, in order:
-  1. `<DB_PATH dir>/oui.csv` — runtime cache, refreshed periodically against
+  1. `<DB_PATH dir>/oui.csv` - runtime cache, refreshed periodically against
      IEEE. Lives in the persistent /data volume so it survives container
      restarts. Used when present.
-  2. `backend/adapters/oui.csv` — bundled with the source; ensures the app
+  2. `backend/adapters/oui.csv` - bundled with the source; ensures the app
      works offline on first start before the cache has been populated.
 
 `refresh_if_stale()` (called from FastAPI lifespan) downloads a fresh copy
 when the cache is missing or older than `_STALE_AFTER`. It uses
 If-Modified-Since so an unchanged registry returns 304 and we don't waste
 bandwidth. Failures (offline, IEEE down, etc.) are logged but never block
-startup — the bundled CSV is always good enough to keep the lookup working.
+startup - the bundled CSV is always good enough to keep the lookup working.
 
 Update the bundled file by re-downloading from
 https://standards-oui.ieee.org/oui/oui.csv. The CSV has rows for MA-L, MA-M,
-and MA-S; we only consume MA-L (full 24-bit OUIs — what virtually every
+and MA-S; we only consume MA-L (full 24-bit OUIs - what virtually every
 consumer/enterprise NIC uses).
 """
 from __future__ import annotations
@@ -80,10 +80,10 @@ def _parse(path: str) -> dict[str, str]:
 
 def _load() -> None:
     """Populate `_OUI_VENDORS` from the active file. Safe to call multiple
-    times — clears and rebuilds atomically."""
+    times - clears and rebuilds atomically."""
     path = _active_file()
     if not os.path.exists(path):
-        logger.warning("OUI database missing at %s — vendor lookup disabled", path)
+        logger.warning("OUI database missing at %s - vendor lookup disabled", path)
         return
     try:
         new = _parse(path)
@@ -91,7 +91,7 @@ def _load() -> None:
         _OUI_VENDORS.update(new)
         logger.info("OUI database loaded from %s (%d entries)", path, len(_OUI_VENDORS))
     except Exception:
-        logger.exception("Failed to parse %s — keeping previous lookup table", path)
+        logger.exception("Failed to parse %s - keeping previous lookup table", path)
 
 
 def _normalise(mac: str) -> str:
@@ -116,7 +116,7 @@ def lookup(mac: str) -> str | None:
 async def refresh_if_stale() -> None:
     """Download a fresh OUI registry into the runtime cache if the cache is
     missing or older than _STALE_AFTER. Uses If-Modified-Since so unchanged
-    registries return 304 and we don't burn bandwidth. Never raises — any
+    registries return 304 and we don't burn bandwidth. Never raises - any
     failure falls through to the bundled CSV."""
     cache = _cache_path()
     cache_dir = os.path.dirname(cache) or "."
@@ -132,7 +132,7 @@ async def refresh_if_stale() -> None:
         cache_mtime = os.path.getmtime(cache)
         age = datetime.now(timezone.utc).timestamp() - cache_mtime
         if age < _STALE_AFTER:
-            logger.debug("OUI cache is fresh (%.0f hours old) — skipping refresh", age / 3600)
+            logger.debug("OUI cache is fresh (%.0f hours old) - skipping refresh", age / 3600)
             return
         # Stale: ask IEEE only for the bytes if newer than what we have.
         headers["If-Modified-Since"] = format_datetime(
@@ -143,11 +143,11 @@ async def refresh_if_stale() -> None:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, follow_redirects=True) as client:
             r = await client.get(_OUI_URL, headers=headers)
     except Exception as exc:
-        logger.warning("OUI refresh skipped — %s", exc)
+        logger.warning("OUI refresh skipped - %s", exc)
         return
 
     if r.status_code == 304:
-        # Server says we're current — bump mtime so we don't recheck for
+        # Server says we're current - bump mtime so we don't recheck for
         # another _STALE_AFTER seconds.
         if cache_mtime is not None:
             try:
@@ -159,7 +159,7 @@ async def refresh_if_stale() -> None:
 
     if r.status_code != 200 or len(r.content) < 100_000:
         logger.warning(
-            "OUI refresh got HTTP %s with %d bytes — keeping existing copy",
+            "OUI refresh got HTTP %s with %d bytes - keeping existing copy",
             r.status_code, len(r.content),
         )
         return

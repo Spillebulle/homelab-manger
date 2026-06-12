@@ -3,14 +3,14 @@
 The dangerous quirk this module is built around: Namecheap has NO
 "add one record" call. `namecheap.domains.dns.setHosts` REPLACES the entire
 host-record set for the domain in one shot, so every mutation here is a
-read-modify-write — and a bug (or a truncated read) could wipe every DNS
+read-modify-write - and a bug (or a truncated read) could wipe every DNS
 record on the domain. Hence the guard rails:
 
 - A write NEVER happens unless the preceding `getHosts` returned a clean
   Status="OK" response with `IsUsingOurDNS=true`. Any doubt → exception, no
   write.
 - `EmailType` from the getHosts response is passed back on setHosts.
-  Omitting it silently resets the domain's email-forwarding mode — a known
+  Omitting it silently resets the domain's email-forwarding mode - a known
   Namecheap footgun.
 - `remove_record` only writes when it actually matched something, and only
   removes the exact (name, type[, address]) it was told to.
@@ -66,7 +66,7 @@ class NamecheapClient:
         }
 
     async def _call(self, params: dict) -> ET.Element:
-        """POST (form-encoded — setHosts param lists get long) and parse the
+        """POST (form-encoded - setHosts param lists get long) and parse the
         XML envelope, raising on Status="ERROR" with Namecheap's message."""
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as c:
@@ -89,14 +89,14 @@ class NamecheapClient:
     async def get_hosts(self, domain: str) -> dict:
         """All host records for the domain. Raises (→ no later write can
         happen) unless the response is clean and the domain actually uses
-        Namecheap's DNS — records set elsewhere can't be managed here."""
+        Namecheap's DNS - records set elsewhere can't be managed here."""
         root = await self._call(self._base_params("namecheap.domains.dns.getHosts", domain))
         result = root.find(".//{*}DomainDNSGetHostsResult")
         if result is None:
             raise NamecheapError("Namecheap getHosts returned no result element")
         if (result.get("IsUsingOurDNS") or "").lower() != "true":
             raise NamecheapError(
-                f"{domain} is not using Namecheap's DNS servers — "
+                f"{domain} is not using Namecheap's DNS servers - "
                 "records can't be managed via this API")
         hosts = []
         for h in result.findall("{*}host"):
@@ -130,7 +130,7 @@ class NamecheapClient:
     async def ensure_record(self, domain: str, host: str, rtype: str, address: str,
                             ttl: int = 300) -> str:
         """Idempotent add. Returns 'created' or 'exists'. Refuses (raises) on
-        conflicts rather than overwriting — a same-name record pointing
+        conflicts rather than overwriting - a same-name record pointing
         somewhere else is the user's to resolve, not ours to clobber."""
         rtype = rtype.upper()
         host_l = host.lower()
@@ -147,7 +147,7 @@ class NamecheapClient:
             # a conflict either way.
             conflicts = ", ".join(f"{h['type']} → {h['address']}" for h in same_name)
             raise NamecheapError(
-                f"A DNS record for '{host}.{domain}' already exists ({conflicts}) — "
+                f"A DNS record for '{host}.{domain}' already exists ({conflicts}) - "
                 "remove it in Namecheap or pick another subdomain")
 
         hosts.append({"name": host, "type": rtype, "address": address,

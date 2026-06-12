@@ -10,9 +10,9 @@ from .usbups import USBUPSAdapter
 ADAPTER_MAP: dict[str, type[BaseAdapter]] = {
     "snmp":         SNMPAdapter,
     "dlink":        DLinkAdapter,
-    "hpe1820":      HPE1820Adapter,      # HPE OfficeConnect 1820 — SNMP read + web UI write
-    "cimc":         CIMCAdapter,         # UCS C-series M2/M3, CIMC < 3.0 — XMLAPI + IPMI
-    "cimc_redfish": CIMCRedfishAdapter,  # UCS C-series with CIMC 3.0+ — Redfish + XMLAPI hybrid
+    "hpe1820":      HPE1820Adapter,      # HPE OfficeConnect 1820 - SNMP read + web UI write
+    "cimc":         CIMCAdapter,         # UCS C-series M2/M3, CIMC < 3.0 - XMLAPI + IPMI
+    "cimc_redfish": CIMCRedfishAdapter,  # UCS C-series with CIMC 3.0+ - Redfish + XMLAPI hybrid
     "redfish":      RedfishAdapter,
     "ilo":          RedfishAdapter,      # HP iLO 5+
     "idrac":        RedfishAdapter,      # Dell iDRAC 8+

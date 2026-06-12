@@ -11,7 +11,7 @@ class EncryptedJSON(TypeDecorator):
     """Stores a JSON-able value as Fernet-encrypted text. Read sites get a
     dict (or None) back automatically; write sites pass a dict (or None) and
     the column handles serialization + encryption. Legacy plaintext rows
-    decode transparently — they're re-encrypted by the startup migration in
+    decode transparently - they're re-encrypted by the startup migration in
     `database.py`, but until that runs (or for fresh ad-hoc reads) the
     fallback in decrypt_credentials handles them.
 
@@ -21,7 +21,7 @@ class EncryptedJSON(TypeDecorator):
     JSON."""
 
     impl = Text
-    cache_ok = True  # SQLAlchemy 2.x — compile-time caching is safe; we have no per-instance state
+    cache_ok = True  # SQLAlchemy 2.x - compile-time caching is safe; we have no per-instance state
 
     def process_bind_param(self, value, dialect):
         return encrypt_credentials(value)
@@ -38,7 +38,7 @@ class Device(Base):
     hostname = Column(String(255), nullable=False)
     device_type = Column(String(50), nullable=False)   # switch | server | router | pdu | ups
     adapter_type = Column(String(50), nullable=False)  # snmp | dlink | cimc | redfish | ilo | idrac | ibmc
-    # Column type is EncryptedJSON — read/write as a dict; the TypeDecorator
+    # Column type is EncryptedJSON - read/write as a dict; the TypeDecorator
     # handles JSON serialization and Fernet encryption transparently. See
     # `credentials_crypto.py` for the key-management model.
     credentials = Column(EncryptedJSON)
@@ -62,7 +62,7 @@ class DeviceCache(Base):
 
     # Without this, two concurrent polls can both SELECT-miss and both INSERT,
     # leaving duplicate (device_id, cache_key) rows. The cache_map reader picks
-    # whichever row SQLite returns last — sometimes the stale one — so the UI
+    # whichever row SQLite returns last - sometimes the stale one - so the UI
     # shows yesterday's data with no indication that's what happened.
     __table_args__ = (
         UniqueConstraint("device_id", "cache_key", name="uq_device_cache_key"),
@@ -79,7 +79,7 @@ class DeviceMetric(Base):
     creates it automatically; no manual migration needed.
 
     Float storage (not the EncryptedJSON dict pattern) because these are
-    non-secret numeric series queried by range — encryption would defeat the
+    non-secret numeric series queried by range - encryption would defeat the
     indexed time-window scans the history endpoint relies on."""
     __tablename__ = "device_metrics"
 
@@ -90,7 +90,7 @@ class DeviceMetric(Base):
     ts = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     # The history endpoint always filters by (device_id, metric) over a ts
-    # range and orders by ts — this composite index serves both the scan and
+    # range and orders by ts - this composite index serves both the scan and
     # the retention-prune DELETE.
     __table_args__ = (
         Index("ix_device_metrics_lookup", "device_id", "metric", "ts"),
@@ -127,7 +127,7 @@ class Event(Base):
 class NotificationConfig(Base):
     """Per-device notification settings. One row per device. Currently a single
     Discord webhook + per-event-type toggles; the webhook is stored plaintext
-    (it's a capability URL, not a password — homelab stance, same as the rest)."""
+    (it's a capability URL, not a password - homelab stance, same as the rest)."""
     __tablename__ = "notification_configs"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -146,7 +146,7 @@ class ShutdownRule(Base):
     UPS device and target another device (server/switch/etc.).
 
     Firing is once-per-outage: `last_triggered_at` is stamped when a rule fires
-    and cleared (re-armed) when the UPS returns to mains power — persisted so an
+    and cleared (re-armed) when the UPS returns to mains power - persisted so an
     app restart mid-outage doesn't re-shut-down a machine that's already down.
 
     Thresholds (either/both, OR-combined): fire when `charge_pct <=
@@ -166,7 +166,7 @@ class ShutdownRule(Base):
     last_triggered_at = Column(DateTime, nullable=True)    # NULL ⇒ armed
     # Ordering during an outage: rules fire in ascending `priority` (then id), so
     # you can bring VMs/hosts down before the host they depend on. After firing a
-    # rule, the orchestrator waits `delay_after_sec` before the next one — time
+    # rule, the orchestrator waits `delay_after_sec` before the next one - time
     # for a guest OS to finish shutting down before its hypervisor is told to.
     priority = Column(Integer, nullable=False, default=100)
     delay_after_sec = Column(Integer, nullable=False, default=0)
@@ -176,7 +176,7 @@ class ShutdownRule(Base):
 class Integration(Base):
     """Global third-party integration settings (Nginx Proxy Manager,
     Namecheap). One row per integration `name`, with the whole config dict
-    stored Fernet-encrypted — same EncryptedJSON column as device
+    stored Fernet-encrypted - same EncryptedJSON column as device
     credentials, since both integrations hold secrets (NPM admin password,
     Namecheap API key)."""
     __tablename__ = "integrations"
@@ -194,7 +194,7 @@ class Service(Base):
 
     Provisioning is a 3-step pipeline (DNS record → NPM proxy host → SSL
     certificate) run as a background task; each step records its own
-    status/detail so a partial failure is visible and retryable — re-running
+    status/detail so a partial failure is visible and retryable - re-running
     provisioning skips steps already marked `ok`. The created NPM object ids
     and the exact DNS record we wrote are stored so deletion can clean up
     precisely what was provisioned and nothing else."""
@@ -209,7 +209,7 @@ class Service(Base):
     forward_port = Column(Integer, nullable=False)
     # NPM proxy-host settings, pushed to NPM by the pipeline's sync step.
     # (Columns after `websockets` are ALTER-ed into pre-existing tables by
-    # _migrate_add_service_columns — keep that migration in step.)
+    # _migrate_add_service_columns - keep that migration in step.)
     websockets = Column(Boolean, default=True)
     block_exploits = Column(Boolean, default=True)
     caching_enabled = Column(Boolean, default=False)
@@ -217,7 +217,7 @@ class Service(Base):
     http2_support = Column(Boolean, default=True)
     hsts_enabled = Column(Boolean, default=False)
     hsts_subdomains = Column(Boolean, default=False)
-    # Optional link to a Portainer container (by name — stable across
+    # Optional link to a Portainer container (by name - stable across
     # container recreations, unlike the id). Display/navigation only; nothing
     # is ever sent to Portainer.
     portainer_container = Column(String(255), nullable=True)
@@ -240,7 +240,7 @@ class Service(Base):
 
 class ApiKey(Base):
     """A bearer token for programmatic API access, as an alternative to the
-    cookie session. Only the SHA-256 hash is stored — the plaintext is shown
+    cookie session. Only the SHA-256 hash is stored - the plaintext is shown
     once at creation and never recoverable. `prefix` is a non-secret leading
     slice kept purely so the UI can identify which key is which."""
     __tablename__ = "api_keys"

@@ -116,7 +116,7 @@ class PreflightRequest(BaseModel):
     blanked from /api/devices/{id}/credentials (so the browser never holds
     the real passwords), and the user can save without re-typing them
     because the PUT handler merges blanks with stored values. The preflight
-    endpoint applies the same merge when `device_id` is supplied — without
+    endpoint applies the same merge when `device_id` is supplied - without
     that, clicking "Test connection" on an unmodified edit form sends empty
     passwords and probes fail with "no credentials configured" even though
     the saved device has perfectly good creds in the DB."""

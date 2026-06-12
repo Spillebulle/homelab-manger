@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 # Rate-limit duplicate SNMP failure warnings per (host, port, error-type).
 # A single misconfigured device (wrong community, host down) otherwise spams
-# ~10 walk-failed lines per poll cycle. We still want to know it happened —
+# ~10 walk-failed lines per poll cycle. We still want to know it happened -
 # just not 10x per minute forever. First occurrence logs immediately; further
 # occurrences are suppressed until _SNMP_WARN_QUIET_SECONDS has elapsed.
 _SNMP_WARN_QUIET_SECONDS = 300
@@ -23,7 +23,7 @@ _snmp_last_warn: dict[tuple, float] = {}
 def _snmp_warn_ratelimited(key: tuple, *args, **kwargs) -> None:
     """Emit `logger.warning(*args, **kwargs)` only if we haven't already
     warned for this `key` within _SNMP_WARN_QUIET_SECONDS. Otherwise drop it
-    silently — the first occurrence is enough context for an operator to
+    silently - the first occurrence is enough context for an operator to
     investigate; the rest is noise."""
     now = time.monotonic()
     last = _snmp_last_warn.get(key)
@@ -59,7 +59,7 @@ _FDB_ADDR    = "1.3.6.1.2.1.17.4.3.1.1"  # dot1dTpFdbAddress (MAC)
 _FDB_PORT    = "1.3.6.1.2.1.17.4.3.1.2"  # dot1dTpFdbPort   (bridge-port)
 _BRIDGE_PORT_TO_IF = "1.3.6.1.2.1.17.1.4.1.2"  # dot1dBasePortIfIndex
 
-# IP-MIB ARP — modern (RFC 4293) and legacy (RFC 1213) tables
+# IP-MIB ARP - modern (RFC 4293) and legacy (RFC 1213) tables
 _ARP_MODERN  = "1.3.6.1.2.1.4.35.1.4"   # ipNetToPhysicalPhysAddress (mac value, IP in OID)
 _ARP_LEGACY  = "1.3.6.1.2.1.4.22.1.2"   # ipNetToMediaPhysAddress
 _OWN_IP_TBL  = "1.3.6.1.2.1.4.20.1.1"   # ipAdEntAddr (this device's L3 addresses)
@@ -67,11 +67,11 @@ _IP_NETMASK  = "1.3.6.1.2.1.4.20.1.3"   # ipAdEntNetMask (sibling column to ipAd
 _IP_ORIGIN   = "1.3.6.1.2.1.4.34.1.6"   # ipAddressOrigin (1=other 2=manual 4=dhcp 5=link 6=random)
 _ROUTE_NEXTHOP = "1.3.6.1.2.1.4.21.1.7" # ipRouteNextHop (legacy table; default route's row indexed by .0.0.0.0)
 
-# Entity MIB — physical inventory (firmware, serial, model)
+# Entity MIB - physical inventory (firmware, serial, model)
 _ENT_SOFT_REV = "1.3.6.1.2.1.47.1.1.1.1.10"  # entPhysicalSoftwareRev
 _ENT_SERIAL   = "1.3.6.1.2.1.47.1.1.1.1.11"  # entPhysicalSerialNum
 
-# BRIDGE-MIB — chassis MAC (the address used by the management UI)
+# BRIDGE-MIB - chassis MAC (the address used by the management UI)
 _BRIDGE_BASE_MAC = "1.3.6.1.2.1.17.1.1.0"
 
 _IP_ORIGIN_NAMES = {1: "other", 2: "manual", 4: "dhcp", 5: "linklayer", 6: "random"}
@@ -79,7 +79,7 @@ _IP_ORIGIN_NAMES = {1: "other", 2: "manual", 4: "dhcp", 5: "linklayer", 6: "rand
 # Communities we treat as non-secret for log purposes. Anything else (a custom
 # string the operator picked) gets masked so it doesn't end up in container
 # logs / log shippers in plaintext. `public` / `private` are the historical
-# RFC defaults — virtually every SNMP agent ships pre-configured with them.
+# RFC defaults - virtually every SNMP agent ships pre-configured with them.
 _PUBLIC_COMMUNITIES = {"public", "private"}
 
 
@@ -92,7 +92,7 @@ def _mask_community(community: str) -> str:
 # states the UI actually distinguishes: delivering, fault, and "nothing here".
 # Standard state 2 (searching = PoE enabled but no PD detected) and state 5
 # (test) both fold to "disabled" so empty/idle PoE ports render without a
-# status dot — otherwise every disconnected PoE port carries a dim yellow
+# status dot - otherwise every disconnected PoE port carries a dim yellow
 # indicator and the ones genuinely delivering power get lost in the noise.
 # Same rule the D-Link CLI parser applies to "OFF/Interim".
 _POE_DETECTION_NAMES = {
@@ -111,7 +111,7 @@ def _walk_sync(host: str, community: str, oid: str, port: int = 161) -> list[tup
     """Walk an OID subtree. Swallows exceptions and returns [] so a single failed
     sub-walk doesn't blow up the caller, but logs the failure at WARNING so
     silent-empty results are diagnosable. Empty community looks identical to
-    "device offline" at the wire level — both produce timeouts — so the log
+    "device offline" at the wire level - both produce timeouts - so the log
     message is the only way to tell them apart without packet capture."""
     import puresnmp
     results = []
@@ -120,11 +120,11 @@ def _walk_sync(host: str, community: str, oid: str, port: int = 161) -> list[tup
             results.append((str(vb.oid), vb.value))
     except Exception as exc:
         # De-dupe on (host, port, exception class). A wrong community produces
-        # the same exception type for every OID in a poll — log once per host
+        # the same exception type for every OID in a poll - log once per host
         # per 5 minutes instead of per-OID.
         _snmp_warn_ratelimited(
             ("walk", host, port, type(exc).__name__),
-            "SNMP walk failed: host=%s oid=%s community=%s port=%d — %s: %s "
+            "SNMP walk failed: host=%s oid=%s community=%s port=%d - %s: %s "
             "(further identical failures from this host suppressed for %ds)",
             host, oid, _mask_community(community), port,
             type(exc).__name__, exc, _SNMP_WARN_QUIET_SECONDS,
@@ -262,8 +262,8 @@ class SNMPAdapter(BaseAdapter):
     def __init__(self, hostname: str, credentials: dict):
         super().__init__(hostname, credentials)
         # `.get(key, default)` only uses the default when the key is missing.
-        # An empty string in the form lands in the JSON blob as "" — which is
-        # a valid community wire-side but always rejected by the agent — so
+        # An empty string in the form lands in the JSON blob as "" - which is
+        # a valid community wire-side but always rejected by the agent - so
         # use `or` to also fall back when the stored value is empty/None.
         # Defaults follow the historical SNMP convention: public for reads
         # (read-only), private for writes (read-write). Most agents ship with
@@ -287,7 +287,7 @@ class SNMPAdapter(BaseAdapter):
         raise ValueError(f"Unknown cache key: {cache_key!r}")
 
     async def _status(self) -> dict:
-        # All probes in parallel — single round-trip latency for the whole set.
+        # All probes in parallel - single round-trip latency for the whole set.
         # Devices that don't expose a given table just return [] / None and
         # the corresponding field stays null in the response.
         probe_labels = (
@@ -310,14 +310,14 @@ class SNMPAdapter(BaseAdapter):
         )
 
         # `return_exceptions=True` turns probe failures into values rather than
-        # propagating them — without this loop they vanish silently and the
+        # propagating them - without this loop they vanish silently and the
         # device just looks "offline" with no log line to debug. The walks
         # already log via _walk_sync; only _get failures need surfacing here.
         for label, result in zip(probe_labels, results):
             if isinstance(result, Exception):
                 _snmp_warn_ratelimited(
                     ("probe", self.hostname, self.port, label, type(result).__name__),
-                    "SNMP probe failed: host=%s probe=%s community=%s port=%d — %s: %s",
+                    "SNMP probe failed: host=%s probe=%s community=%s port=%d - %s: %s",
                     self.hostname, label, _mask_community(self.community),
                     self.port, type(result).__name__, result,
                 )
@@ -373,14 +373,14 @@ class SNMPAdapter(BaseAdapter):
         if not online:
             # sysName is the cheapest "is this thing answering at all?" probe.
             # When it comes back as None *and* nothing else did either, we're
-            # almost always looking at wrong creds or unreachable host — log
+            # almost always looking at wrong creds or unreachable host - log
             # so the user can tell those apart from a legitimately-down box.
             other_results = (descr, uptime, base_mac, ipaddr_w, mask_w, origin_w, route_w, fw_w, sn_w)
             if all(v is None or v == [] for v in other_results):
                 _snmp_warn_ratelimited(
                     ("offline", self.hostname, self.port),
                     "SNMP host=%s appears offline or rejecting all probes "
-                    "(community=%s port=%d) — check community string, host reachability, "
+                    "(community=%s port=%d) - check community string, host reachability, "
                     "and SNMP manager allow-list on the device",
                     self.hostname, _mask_community(self.community), self.port,
                 )
@@ -421,7 +421,7 @@ class SNMPAdapter(BaseAdapter):
         speed_m = to_map(walks[6])
         alias_m = to_map(walks[7])
 
-        # Use the union of ALL walked OIDs — D-Link sometimes omits ifDescr
+        # Use the union of ALL walked OIDs - D-Link sometimes omits ifDescr
         # for unpopulated SFP/combo ports, but they still have admin/oper status.
         all_indices = set(descr_m) | set(admin_m) | set(oper_m)
 
@@ -468,7 +468,7 @@ class SNMPAdapter(BaseAdapter):
         cons_watts = scalar_list(walks[4])
 
         # Sort numerically by (group, port). The keys look like "1.1", "1.10",
-        # "1.2"; sorted() on strings would produce 1.1, 1.10, 1.11, …, 1.2 —
+        # "1.2"; sorted() on strings would produce 1.1, 1.10, 1.11, …, 1.2 -
         # the classic natural-sort trap.
         def _poe_key(k: str) -> tuple[int, ...]:
             try:
@@ -497,7 +497,7 @@ class SNMPAdapter(BaseAdapter):
     async def _connected(self) -> list[dict]:
         """Return MAC table joined with bridge-port→ifIndex and (where the
         switch knows it) ARP-derived IP. Devices that haven't talked to the
-        switch's L3 plane will have ip=None — that's not a bug, the switch
+        switch's L3 plane will have ip=None - that's not a bug, the switch
         genuinely doesn't know.
         """
         fdb_addr_w, fdb_port_w, b2i_w, arp_mod_w, arp_leg_w, own_w = await asyncio.gather(
@@ -521,7 +521,7 @@ class SNMPAdapter(BaseAdapter):
         addr_by_tail = {oid[len(_FDB_ADDR) + 1:]: v for oid, v in _safe(fdb_addr_w)}
         port_by_tail = {oid[len(_FDB_PORT) + 1:]: v for oid, v in _safe(fdb_port_w)}
 
-        # ARP joins. Modern table is preferred — its key already contains the
+        # ARP joins. Modern table is preferred - its key already contains the
         # IP as dotted decimal (e.g. ".5121.1.4.192.168.0.1"); the trailing 4
         # octets are the IP. Legacy table encodes the IP the same way.
         mac_to_ip: dict[str, str] = {}

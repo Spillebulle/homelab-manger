@@ -3,13 +3,13 @@ Symmetric encryption of per-device credentials at rest.
 
 Keys come from CREDENTIAL_KEY env var if set, otherwise from a persisted
 random key at <DB_PATH dir>/.credential_key. Same precedence model as
-SESSION_SECRET — explicit config wins, persisted fallback keeps zero-config
+SESSION_SECRET - explicit config wins, persisted fallback keeps zero-config
 homelab installs working out of the box.
 
 Encrypted values are stored with an `enc:` prefix so the migration / decoder
 can tell encrypted from legacy plaintext rows without guessing. Fernet
 tokens already have their own structure (timestamp + HMAC) so the prefix is
-just disambiguation for our own tooling — don't treat its absence as a
+just disambiguation for our own tooling - don't treat its absence as a
 security signal.
 
 Operational note: rotating the key invalidates every existing encrypted row.
@@ -64,7 +64,7 @@ def get_credential_key() -> bytes:
     logger.warning(
         "Credential encryption key generated and persisted at %s. "
         "Set CREDENTIAL_KEY in the environment if you want to manage it "
-        "externally — the persisted file is the auto-generated fallback.",
+        "externally - the persisted file is the auto-generated fallback.",
         path,
     )
     return key
@@ -102,18 +102,18 @@ def decrypt_credentials(stored: str | None) -> Any:
             payload = _fernet().decrypt(token)
         except InvalidToken:
             # The key changed (operator rotated CREDENTIAL_KEY, or the .credential_key
-            # file was lost and regenerated). Surface this loudly — the device
+            # file was lost and regenerated). Surface this loudly - the device
             # can't be polled until the credential is re-entered, but we don't
             # want to crash the whole adapter pipeline either.
             logger.error(
-                "Failed to decrypt credentials — Fernet key mismatch. The device "
+                "Failed to decrypt credentials - Fernet key mismatch. The device "
                 "credential must be re-entered via the edit modal. (Did CREDENTIAL_KEY "
                 "change, or was %s regenerated?)",
                 _key_path(),
             )
             return {}
         return json.loads(payload.decode("utf-8"))
-    # Legacy plaintext row — parse as JSON.
+    # Legacy plaintext row - parse as JSON.
     try:
         return json.loads(stored)
     except json.JSONDecodeError:
