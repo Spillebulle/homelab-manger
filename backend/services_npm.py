@@ -204,24 +204,39 @@ class NPMClient:
         return None
 
     async def create_certificate(self, fqdn: str, le_email: str) -> dict:
-        # NPM 2.11+ validates this meta as a oneOf: the HTTP-01 variant allows
-        # ONLY letsencrypt_email + letsencrypt_agree (additionalProperties
-        # false), the DNS variant requires dns_provider fields. Sending
-        # `dns_challenge: false` fails BOTH branches with the cryptic
-        # "data/meta must NOT have additional properties" (twice, once per
-        # branch) - so don't add keys here.
-        return await self._request(
-            "POST", "/nginx/certificates",
-            {
-                "domain_names": [fqdn],
-                "provider": "letsencrypt",
-                "meta": {
-                    "letsencrypt_email": le_email,
-                    "letsencrypt_agree": True,
-                },
+        # Modern NPM (2.12.x certificate-object.json schema) allows ONLY these
+        # meta keys: certificate, certificate_key, dns_challenge, dns_provider,
+        # dns_provider_credentials, letsencrypt_certificate,
+        # propagation_seconds, key_type. letsencrypt_email/letsencrypt_agree
+        # were REMOVED - sending them fails additionalProperties validation
+        # with one "data/meta must NOT have additional properties" per
+        # offending key. Older NPMs (2.9/2.10 era) still expect email+agree,
+        # so fall back to the legacy payload when the modern one is rejected
+        # by schema validation.
+        modern = {
+            "domain_names": [fqdn],
+            "provider": "letsencrypt",
+            "meta": {"dns_challenge": False},
+        }
+        try:
+            return await self._request("POST", "/nginx/certificates", modern,
+                                       timeout=_CERT_TIMEOUT)
+        except NPMError as exc:
+            msg = str(exc).lower()
+            if "additional properties" not in msg and "required property" not in msg:
+                raise
+            logger.info("NPM rejected modern certificate payload (%s) - retrying with legacy meta", exc)
+        legacy = {
+            "domain_names": [fqdn],
+            "provider": "letsencrypt",
+            "meta": {
+                "letsencrypt_email": le_email,
+                "letsencrypt_agree": True,
+                "dns_challenge": False,
             },
-            timeout=_CERT_TIMEOUT,
-        )
+        }
+        return await self._request("POST", "/nginx/certificates", legacy,
+                                   timeout=_CERT_TIMEOUT)
 
     async def delete_certificate(self, certificate_id: int) -> None:
         try:
