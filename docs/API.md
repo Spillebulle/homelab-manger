@@ -1,7 +1,7 @@
-# HomeLab Manger — HTTP API
+# HomeLab Manger - HTTP API
 
 HomeLab Manger is a single FastAPI process that serves both this JSON API and the
-SPA. Everything the web UI does, it does through these endpoints — so the API is
+SPA. Everything the web UI does, it does through these endpoints - so the API is
 the full surface of the app. This document covers authentication (cookie session
 **and** API keys), every `/api/*` route, request/response shapes, and the device
 action vocabulary.
@@ -25,14 +25,14 @@ Two mechanisms authenticate against the same single admin user. Every route unde
 `/api/*` is gated **except** the auth/login routes and `/api/version` (see
 [Unauthenticated endpoints](#unauthenticated-endpoints)). `GET /healthz`
 (container liveness; pings the DB, returns 200/503) is also open and lives
-outside `/api`. The login route itself is brute-force throttled — 5 failed
+outside `/api`. The login route itself is brute-force throttled - 5 failed
 attempts per client IP in 5 minutes returns `429` with `Retry-After`.
 
 The gate (`current_user` in `backend/auth.py`) checks, in order:
 
-1. **Cookie session** — set by `POST /api/auth/login`, stored in the
+1. **Cookie session** - set by `POST /api/auth/login`, stored in the
    `homelab_session` cookie. Used by the browser SPA. Checked first, no DB hit.
-2. **API key** — a bearer token, checked only when there's no valid session.
+2. **API key** - a bearer token, checked only when there's no valid session.
 
 On failure both paths return:
 
@@ -46,7 +46,7 @@ On failure both paths return:
 This is the path you want for scripts, cron jobs, Home Assistant, Grafana, etc.
 
 **Token format:** `hlm_` followed by 32 url-safe random bytes, e.g.
-`hlm_x7Qa...`. Only a **SHA-256 hash** of the token is stored in the DB — the
+`hlm_x7Qa...`. Only a **SHA-256 hash** of the token is stored in the DB - the
 plaintext is shown **once**, at creation, and is unrecoverable afterward. A
 non-secret 12-char `prefix` is kept for display/identification.
 
@@ -70,7 +70,7 @@ curl -sX POST http://homelab.lan:8080/api/api-keys \
 ```json
 { "id": 3, "name": "grafana", "prefix": "hlm_x7Qa9bcd", "key": "hlm_x7Qa9bcd...full..." }
 ```
-Copy `key` now — it is never returned again.
+Copy `key` now - it is never returned again.
 
 > **Bootstrapping the first key:** you need *some* credential to create the first
 > API key. Log into the SPA in a browser (session cookie) and create one from the
@@ -78,7 +78,7 @@ Copy `key` now — it is never returned again.
 > key-minting path by design.
 
 **WebSocket auth is session-only.** `/api/ws` reads the session cookie directly
-and does **not** accept API keys — it's only used by the browser SPA. Bearer
+and does **not** accept API keys - it's only used by the browser SPA. Bearer
 tokens won't open the socket.
 
 Each successful key-authenticated request best-effort stamps `last_used_at` on the
@@ -92,7 +92,7 @@ key (visible in `GET /api/api-keys`).
 |--------|------|---------|
 | `GET`  | `/healthz` | Liveness probe (pings the DB). `200 {status:ok,db:true,version}` or `503`. Used by the Docker `HEALTHCHECK`. |
 | `GET`  | `/api/version` | App version + project links. Open so the login page can show it. |
-| `GET`  | `/api/auth/me` | `{ "authenticated": bool, "username": str\|null }` — reports session state. |
+| `GET`  | `/api/auth/me` | `{ "authenticated": bool, "username": str\|null }` - reports session state. |
 | `POST` | `/api/auth/login` | Body `{username, password}` → sets session cookie, returns `{ok, username}`. 401 on bad creds, 429 when throttled. |
 | `POST` | `/api/auth/logout` | Clears the session. `{ok: true}`. |
 
@@ -148,7 +148,7 @@ be up to one poll interval stale. Each adapter populates a different set of
 The special `metrics` cache key feeds the time-series history table (graphs). Any
 adapter emitting a `metrics` dict gets graphed automatically.
 
-**Writes bypass the cache** — actions (port toggles, power on/off) go straight to
+**Writes bypass the cache** - actions (port toggles, power on/off) go straight to
 the device via `execute_action` and return the result synchronously.
 
 To force an out-of-band poll, use `POST /api/devices/{id}/refresh`.
@@ -179,10 +179,10 @@ included here.**
 ]
 ```
 
-- `shutdown_actions` — power-off actions this device type supports as a shutdown
+- `shutdown_actions` - power-off actions this device type supports as a shutdown
   **target** (empty for switches/UPS; `["power_off"]` or
   `["graceful_shutdown","power_off"]` for servers).
-- `last_seen` — timestamp of the last **successful** poll (not last attempt). An
+- `last_seen` - timestamp of the last **successful** poll (not last attempt). An
   offline device keeps its last good `status` but `status_error` is populated.
 
 ### `POST /api/devices` → `201`
@@ -203,11 +203,11 @@ Create a device.
 ```
 Returns `{ "id": 5 }`. `credentials` are Fernet-encrypted at rest. `poll_interval`
 is seconds; omit/`null` to use the global default; the poller clamps to a 5 s
-minimum. Credential keys vary per adapter — see [Credential keys](#credential-keys-by-adapter).
+minimum. Credential keys vary per adapter - see [Credential keys](#credential-keys-by-adapter).
 
 ### `PUT /api/devices/{id}`
 
-Partial update — only the fields you send are changed (`exclude_unset`).
+Partial update - only the fields you send are changed (`exclude_unset`).
 
 **Secret credential fields are merged, not overwritten.** Sending an empty string
 (or omitting the key) for any of `password`, `ssh_password`, `web_password`,
@@ -229,7 +229,7 @@ non-secret fields without ever shipping a password to the browser.
 
 ### `GET /api/devices/{id}/cache`
 
-The full cache map for a device — every cache key plus per-key metadata:
+The full cache map for a device - every cache key plus per-key metadata:
 
 ```json
 {
@@ -253,24 +253,24 @@ side effect.
 
 ### `GET /api/devices/{id}/graph`
 
-**Charting-tool-friendly time-series**, returned as a **flat JSON array** — built
+**Charting-tool-friendly time-series**, returned as a **flat JSON array** - built
 for Grafana (Infinity), Metabase, Observable, `pandas.read_json`, etc. This is the
 endpoint to point external graphing software at. It works for any device that
 records metrics, not just UPS.
 
 Query params:
-- `metrics` — comma-separated metric names. Default: every metric the device has.
-- `from` / `to` — window bounds. Accepts **epoch milliseconds** (Grafana's
+- `metrics` - comma-separated metric names. Default: every metric the device has.
+- `from` / `to` - window bounds. Accepts **epoch milliseconds** (Grafana's
   `${__from}` / `${__to}`), epoch seconds, or ISO-8601. `to` defaults to now.
-- `hours` — look-back window (float, default `24`); used only when `from` is omitted.
-- `max_points` — per-series downsample cap (default `600`); longer series are
+- `hours` - look-back window (float, default `24`); used only when `from` is omitted.
+- `max_points` - per-series downsample cap (default `600`); longer series are
   bucket-averaged.
-- `format` — `long` (default) or `wide`.
+- `format` - `long` (default) or `wide`.
 
 Timestamps are **RFC 3339 UTC with a trailing `Z`**, so no tool has to guess the
-zone (this is the one wart `/history` has — see below).
+zone (this is the one wart `/history` has - see below).
 
-**`long` (default)** — one object per data point, with the metric name as a label
+**`long` (default)** - one object per data point, with the metric name as a label
 column. Ideal for a multi-series panel that splits series by `metric`:
 ```json
 [
@@ -279,7 +279,7 @@ column. Ideal for a multi-series panel that splits series by `metric`:
 ]
 ```
 
-**`wide`** (`?format=wide`) — one object per timestamp, a column per metric
+**`wide`** (`?format=wide`) - one object per timestamp, a column per metric
 (spreadsheet shape). Metrics are aligned onto a shared time grid; a metric absent
 from a bucket is simply omitted from that row (a gap, not a zero):
 ```json
@@ -290,7 +290,7 @@ from a bucket is simply omitted from that row (a gap, not a zero):
 
 UPS metrics are `load_pct`, `watts`, `charge_pct`, `runtime_sec`, `input_voltage`.
 
-#### Grafana (Infinity) setup — the easy way
+#### Grafana (Infinity) setup - the easy way
 
 Because the response is already a **top-level array of objects**, there's no root
 selector to drill into and no array-index columns:
@@ -308,16 +308,16 @@ single metric you can drop the `metric` column and just chart `time` + `value`.
 
 ### `GET /api/devices/{id}/history`
 
-> The SPA's own graphs use this. For external tools prefer **`/graph`** above —
+> The SPA's own graphs use this. For external tools prefer **`/graph`** above -
 > same data, but a flat array, named columns, and a `from`/`to` window, which is
 > far less fiddly to wire into a charting tool than this nested shape.
 
 Time-series data for graphing (driven by the `metrics` cache key).
 
 Query params:
-- `metrics` — comma-separated metric names. Default: every metric the device has.
-- `hours` — look-back window (float, default `24`).
-- `max_points` — cap per series (default `600`); longer series are bucket-averaged.
+- `metrics` - comma-separated metric names. Default: every metric the device has.
+- `hours` - look-back window (float, default `24`).
+- `max_points` - cap per series (default `600`); longer series are bucket-averaged.
 
 ```json
 {
@@ -333,7 +333,7 @@ Query params:
 ### `GET /api/devices/{id}/usb-diagnostics`
 
 `usbups` devices only (else `400`). Dumps the raw HID report descriptor hex +
-every decoded usage/field + a live read — the USB analogue of an SNMP walk. Useful
+every decoded usage/field + a live read - the USB analogue of an SNMP walk. Useful
 to confirm a new UPS model is covered by the generic parser.
 
 ---
@@ -344,11 +344,11 @@ Actions bypass the cache and hit the device synchronously. The action vocabulary
 depends on the adapter.
 
 **Status codes:**
-- `200` — success. Body is the adapter's result, usually `{ "ok": true }` (some
+- `200` - success. Body is the adapter's result, usually `{ "ok": true }` (some
   actions return data, e.g. parsed CLI output).
-- `400` — the action `type` isn't supported for this adapter. Body
+- `400` - the action `type` isn't supported for this adapter. Body
   `{ "error": "Unsupported action: ..." }`.
-- `502` — the device/adapter failed (auth, timeout, switch rejected the command).
+- `502` - the device/adapter failed (auth, timeout, switch rejected the command).
   Body carries the detail in `error` (or `errors` for batch ops like `vlan_batch`).
 
 The error detail is always in the response **body** (`error` / `errors`), not just
@@ -368,12 +368,12 @@ Supported `type` values (Redfish/CIMC-Redfish): `power_on`, `power_off`,
 (firmware ≤ 2.x) supports `power_on`, `power_off`, `power_cycle`, `hard_reset` but
 **not** `graceful_shutdown`.
 
-**KVM launch** (servers — prefer the dedicated endpoint below):
+**KVM launch** (servers - prefer the dedicated endpoint below):
 ```json
 { "type": "kvm_launch" }
 ```
 
-**Switch / SNMP** — port admin toggle (generic SNMP SET, works on any SNMP switch):
+**Switch / SNMP** - port admin toggle (generic SNMP SET, works on any SNMP switch):
 ```json
 { "type": "port_admin", "port_id": "5", "enable": false }
 ```
@@ -410,7 +410,7 @@ curl -sX POST http://homelab.lan:8080/api/devices/1/port/5/action \
 Servers only (`cimc`, `cimc_redfish`, `ibmc`). Returns a Java Web Start `.jnlp`
 file (a download, not JSON) that launches the BMC's KVM console. `400` for other
 adapter types, `502` if the BMC token mint fails. This is the supported way to get
-a KVM session — don't build the JNLP yourself.
+a KVM session - don't build the JNLP yourself.
 
 ---
 
@@ -450,7 +450,7 @@ passwords. Response:
 }
 ```
 `status` is `ok` / `partial` (an optional service failed) / `fail` (a required
-service failed). Some transports (UDP/IPMI) report `skipped` — they can't be
+service failed). Some transports (UDP/IPMI) report `skipped` - they can't be
 probed cheaply.
 
 ### `POST /api/devices/{id}/preflight`
@@ -464,9 +464,9 @@ credentials (no body needed).
 
 | Method | Path | Body | Returns |
 |--------|------|------|---------|
-| `GET` | `/api/api-keys` | — | list of `{id, name, prefix, created_at, last_used_at}` (no secret) |
-| `POST` | `/api/api-keys` | `{name?}` | `{id, name, prefix, key}` — **`key` shown once** |
-| `DELETE` | `/api/api-keys/{id}` | — | `{ok: true}` (404 if not found) |
+| `GET` | `/api/api-keys` | - | list of `{id, name, prefix, created_at, last_used_at}` (no secret) |
+| `POST` | `/api/api-keys` | `{name?}` | `{id, name, prefix, key}` - **`key` shown once** |
+| `DELETE` | `/api/api-keys/{id}` | - | `{ok: true}` (404 if not found) |
 
 ---
 
@@ -526,12 +526,12 @@ Config shape (GET / PUT body):
 ## Shutdown rules (UPS outage orchestration)
 
 When a UPS goes on battery, automatically run a power action on a **target**
-device once a threshold is crossed. **This powers off real machines** — design is
+device once a threshold is crossed. **This powers off real machines** - design is
 conservative (once per outage, re-armed when mains returns).
 
 Rules live under a UPS and target another device. The action passes through to the
 target adapter's `execute_action`, so only targets whose adapter declares a
-shutdown action (servers) are valid — switches/UPS can't be targets.
+shutdown action (servers) are valid - switches/UPS can't be targets.
 
 | Method | Path | Notes |
 |--------|------|-------|
@@ -553,17 +553,17 @@ shutdown action (servers) are valid — switches/UPS can't be targets.
   "delay_after_sec": 0
 }
 ```
-- `action` — must be one the target supports (`graceful_shutdown` / `power_off`);
+- `action` - must be one the target supports (`graceful_shutdown` / `power_off`);
   an unsupported value falls back to the target's first supported action.
-- `trigger_charge_pct` / `trigger_runtime_sec` — thresholds, **OR-combined**.
+- `trigger_charge_pct` / `trigger_runtime_sec` - thresholds, **OR-combined**.
   Either, both, or neither (neither ⇒ fire as soon as on battery).
-- `priority` — lower fires first during an outage (default `100`).
-- `delay_after_sec` — wait after firing this rule before the next (default `0`,
+- `priority` - lower fires first during an outage (default `100`).
+- `delay_after_sec` - wait after firing this rule before the next (default `0`,
   capped at 600 s at fire time).
 - Rejections: self-target → `400`; target can't power off → `400`; duplicate rule
   for the same (UPS, target) → `409`.
 
-**Dry run (`POST .../shutdown-rules/test`):** simulates a full outage — walks the
+**Dry run (`POST .../shutdown-rules/test`):** simulates a full outage - walks the
 enabled rules in firing order and emits a `[Dry run]` event per rule (so Discord
 notifications fire too) **without sending any action to a device or arming
 anything**. Use it to validate the plan + notification wiring. Returns
@@ -593,12 +593,12 @@ target_id, target_name, delay_after_sec}, …]}`.
 
 ---
 
-## WebSocket — `/api/ws`
+## WebSocket - `/api/ws`
 
 Push channel for live UI updates. **Session-cookie auth only** (API keys do not
 work; closes with code `1008` if the session is missing/invalid). On each poll
 cycle the server broadcasts JSON messages (e.g. `device_updated` ticks) so the SPA
-can refresh without polling. Intended for the browser SPA — for programmatic
+can refresh without polling. Intended for the browser SPA - for programmatic
 polling, use `GET /api/devices` / `/cache` on an interval instead.
 
 ---
@@ -651,17 +651,17 @@ curl -sX POST "$BASE/api/devices/1/port/5/action" -H "Authorization: Bearer $KEY
 
 ## Notes & gotchas
 
-- **Reads are cached, not live** — `/devices` and `/cache` reflect the last poll.
+- **Reads are cached, not live** - `/devices` and `/cache` reflect the last poll.
   Use `/refresh` to force a fresh fetch.
-- **Action failures use real status codes** — `400` (unsupported action) or `502`
+- **Action failures use real status codes** - `400` (unsupported action) or `502`
   (device/adapter failed); the detail is in the body's `error`/`errors` field. A
   `200` always means success.
-- **Timestamps are UTC with `Z`** — parse them as UTC (`new Date(...)`,
+- **Timestamps are UTC with `Z`** - parse them as UTC (`new Date(...)`,
   `datetime.fromisoformat`, Grafana time column) and they'll be correct.
-- **API keys ≠ WebSocket** — the WS is session-cookie only.
-- **OpenAPI docs** — FastAPI's auto-generated Swagger UI (`/docs`) and schema
+- **API keys ≠ WebSocket** - the WS is session-cookie only.
+- **OpenAPI docs** - FastAPI's auto-generated Swagger UI (`/docs`) and schema
   (`/openapi.json`) are available, but the schema doesn't capture the per-adapter
   action vocabulary or the dynamic `credentials`/`action` shapes; this file is the
   authoritative reference for those.
-- **Single user, no scoping** — every key has full admin access. Rotate by
+- **Single user, no scoping** - every key has full admin access. Rotate by
   deleting and recreating.
